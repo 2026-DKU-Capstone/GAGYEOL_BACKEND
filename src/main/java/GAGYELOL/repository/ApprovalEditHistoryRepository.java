@@ -8,4 +8,5 @@ import java.util.List;
 
 public interface ApprovalEditHistoryRepository extends JpaRepository<ApprovalEditHistory, Long> {
     List<ApprovalEditHistory> findByRequestOrderByEditedAtAsc(ApprovalRequest request);
+    void deleteByRequest(ApprovalRequest request);
 }

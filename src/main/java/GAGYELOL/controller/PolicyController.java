@@ -41,8 +41,11 @@ public class PolicyController {
     }
 
     @DeleteMapping("/{id}")
-    public ResponseEntity<Void> delete(@PathVariable Long id) {
-        policyService.delete(id);
+    public ResponseEntity<Void> delete(
+            @RequestHeader("Authorization") String token,
+            @PathVariable Long id) {
+        Long userId = jwtUtil.extractUserId(token.replace("Bearer ", ""));
+        policyService.delete(id, userId);
         return ResponseEntity.noContent().build();
     }
 }

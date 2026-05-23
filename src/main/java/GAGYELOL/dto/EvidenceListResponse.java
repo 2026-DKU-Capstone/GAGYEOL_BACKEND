@@ -9,6 +9,7 @@ import java.time.LocalDateTime;
 @Builder
 public class EvidenceListResponse {
     private Long evidenceId;
+    private Long requestId;      // 연결된 결재요청 ID (approved/in_progress 시 존재)
     private String businessName;
     private String title;        // businessName과 동일
     private String status;       // draft / in_progress / approved / rejected

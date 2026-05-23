@@ -2,6 +2,7 @@ package GAGYELOL.repository;
 
 import GAGYELOL.entity.ApprovalRequest;
 import GAGYELOL.entity.Evidence;
+import GAGYELOL.entity.Form;
 import GAGYELOL.entity.User;
 import GAGYELOL.entity.UserGroup;
 import jakarta.persistence.LockModeType;
@@ -20,6 +21,7 @@ public interface ApprovalRequestRepository extends JpaRepository<ApprovalRequest
     List<ApprovalRequest> findByGroupAndStatus(UserGroup group, String status);
     long countByEvidence(Evidence evidence);
     Optional<ApprovalRequest> findFirstByEvidenceOrderByCreatedAtDesc(Evidence evidence);
+    boolean existsByEvidenceAndFormAndStatus(Evidence evidence, Form form, String status);
 
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     @Query("SELECT r FROM ApprovalRequest r WHERE r.id = :id")
