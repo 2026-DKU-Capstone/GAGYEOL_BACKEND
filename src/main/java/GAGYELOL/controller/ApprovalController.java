@@ -97,6 +97,33 @@ public class ApprovalController {
         return ResponseEntity.ok(approvalService.editFields(userId, requestId, request));
     }
 
+    // 받은 결재 목록 (내가 현재 처리해야 할 PENDING 결재)
+    @GetMapping("/pending")
+    public ResponseEntity<List<ApprovalResponse>> getPendingForMe(
+            @RequestHeader("Authorization") String token) {
+        Long userId = extractUserId(token);
+        return ResponseEntity.ok(approvalService.getPendingForMe(userId));
+    }
+
+    // 최종 승인 취소
+    @PostMapping("/{requestId}/cancel")
+    public ResponseEntity<ApprovalResponse> cancel(
+            @RequestHeader("Authorization") String token,
+            @PathVariable Long requestId) {
+        Long userId = extractUserId(token);
+        return ResponseEntity.ok(approvalService.cancel(userId, requestId));
+    }
+
+    // 결재요청 삭제 (최고 권한자만)
+    @DeleteMapping("/{requestId}")
+    public ResponseEntity<Void> deleteRequest(
+            @RequestHeader("Authorization") String token,
+            @PathVariable Long requestId) {
+        Long userId = extractUserId(token);
+        approvalService.deleteRequest(userId, requestId);
+        return ResponseEntity.noContent().build();
+    }
+
     private Long extractUserId(String token) {
         return jwtUtil.extractUserId(token.replace("Bearer ", ""));
     }

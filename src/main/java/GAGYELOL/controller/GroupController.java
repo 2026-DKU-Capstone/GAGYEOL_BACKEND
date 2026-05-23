@@ -13,6 +13,7 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
+import java.util.Map;
 
 @RestController
 @RequestMapping("/api/groups")
@@ -104,6 +105,15 @@ public class GroupController {
             @RequestBody PayerInfoRequest request) {
         Long userId = extractUserId(token);
         return ResponseEntity.ok(groupService.updatePayerInfo(userId, groupId, request));
+    }
+
+    // 현재 사용자가 그룹 최고 권한자인지 확인
+    @GetMapping("/{groupId}/is-top-approver")
+    public ResponseEntity<Map<String, Boolean>> isTopApprover(
+            @RequestHeader("Authorization") String token,
+            @PathVariable Long groupId) {
+        Long userId = extractUserId(token);
+        return ResponseEntity.ok(Map.of("isTopApprover", groupService.isTopApprover(userId, groupId)));
     }
 
     // 역할 삭제 (대표자만, 해당 역할 멤버 없을 때만 가능)

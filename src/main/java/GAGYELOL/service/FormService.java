@@ -45,6 +45,7 @@ public class FormService {
     private final PolicyChunkVectorStore vectorStore;
     private final ObjectMapper objectMapper;
     private final GAGYELOL.repository.UserGroupRepository groupRepository;
+    private final GroupService groupService;
 
     @Value("${file.upload.form-dir:./uploads/forms}")
     private String uploadDir;
@@ -53,7 +54,9 @@ public class FormService {
         User user = userRepository.findById(userId)
                 .orElseThrow(() -> new IllegalArgumentException("사용자를 찾을 수 없습니다."));
         GAGYELOL.entity.UserGroup group = groupId != null
-                ? groupRepository.findById(groupId).orElse(null) : null;
+                ? groupRepository.findById(groupId).orElseThrow(() -> new IllegalArgumentException("그룹을 찾을 수 없습니다.")) : null;
+
+        if (group != null) groupService.assertMaxRole(user, group);
 
         // 1. 파일 저장
         String filePath = saveFile(file);
@@ -250,9 +253,7 @@ public class FormService {
                 throw new ResponseStatusException(HttpStatus.FORBIDDEN, "접근 권한이 없습니다.");
             }
         } else {
-            if (!groupMemberRepository.existsByGroupAndUser(form.getGroup(), user)) {
-                throw new ResponseStatusException(HttpStatus.FORBIDDEN, "해당 그룹의 멤버가 아닙니다.");
-            }
+            groupService.assertMaxRole(user, form.getGroup());
         }
 
         try {
