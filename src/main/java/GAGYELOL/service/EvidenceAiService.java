@@ -59,7 +59,7 @@ public class EvidenceAiService {
         for (String field : formFields) {
             properties.put(field, Map.of(
                     "type", "string",
-                    "description", field + " 항목의 값"
+                    "description", fieldDescription(field)
             ));
         }
 
@@ -89,6 +89,54 @@ public class EvidenceAiService {
         } catch (Exception e) {
             throw new RuntimeException("필드 추출 실패: " + e.getMessage(), e);
         }
+    }
+
+    /**
+     * 수령인 학생증/신분증 이미지에서 인적 정보를 추출합니다. (#3)
+     * 반환 형식: {"name":..., "affiliation":..., "studentId":..., "phone":...} (못 찾은 값은 빈 문자열)
+     */
+    public Map<String, String> extractRecipientInfo(byte[] imageBytes, String mimeType) {
+        Map<String, Object> properties = new LinkedHashMap<>();
+        properties.put("name", Map.of("type", "string", "description", "수령인 이름(성명)"));
+        properties.put("affiliation", Map.of("type", "string", "description", "수령인 소속 (학과·학부·부서명)"));
+        properties.put("studentId", Map.of("type", "string", "description", "수령인 학번 또는 사번"));
+        properties.put("phone", Map.of("type", "string", "description", "수령인 전화번호 (연락처)"));
+
+        Map<String, Object> schema = new LinkedHashMap<>();
+        schema.put("type", "object");
+        schema.put("properties", properties);
+
+        log.info("Upstage IE 수령인 정보 추출 요청");
+        try {
+            String result = upstageIeClient.extract(imageBytes, mimeType, schema);
+            JsonNode node = new ObjectMapper().readTree(result);
+            Map<String, String> info = new LinkedHashMap<>();
+            for (String key : List.of("name", "affiliation", "studentId", "phone")) {
+                JsonNode value = node.path(key);
+                info.put(key, (value.isMissingNode() || value.isNull()) ? "" : value.asText(""));
+            }
+            return info;
+        } catch (Exception e) {
+            throw new RuntimeException("수령인 정보 추출 실패: " + e.getMessage(), e);
+        }
+    }
+
+    /**
+     * 추출 스키마의 필드 설명을 만든다. 금액성 필드에는 음수 기호를 제거한 절댓값으로,
+     * 부가세·공급가액 등 세부 금액이 여러 개면 모두 합산한 총합 하나만 반환하도록 지침을 덧붙인다. (#4)
+     */
+    private static String fieldDescription(String field) {
+        String base = field + " 항목의 값";
+        if (isAmountField(field)) {
+            return base + ". 금액은 음수 기호(-)를 제거하고 절댓값(양수)으로만 반환하고, "
+                    + "공급가액·부가세 등 세부 금액 항목이 여러 개이면 모두 합산한 총합 금액 하나만 숫자로 반환할 것";
+        }
+        return base;
+    }
+
+    private static boolean isAmountField(String field) {
+        return field.contains("금액") || field.contains("합계") || field.contains("총액")
+                || field.contains("단가") || field.contains("비용") || field.endsWith("액");
     }
 
     /**
