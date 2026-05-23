@@ -5,6 +5,7 @@ import GAGYELOL.dto.EvidenceAnalysisResponse;
 import GAGYELOL.dto.EvidenceResponse;
 import GAGYELOL.dto.FillFieldsRequest;
 import GAGYELOL.dto.FillFieldsResponse;
+import GAGYELOL.dto.RecipientInfoResponse;
 import GAGYELOL.entity.Evidence;
 import GAGYELOL.entity.Form;
 import GAGYELOL.entity.User;
@@ -386,6 +387,38 @@ public class EvidenceService {
         return FillFieldsResponse.builder()
                 .evidenceId(evidenceId)
                 .results(results)
+                .build();
+    }
+
+    /**
+     * 수령인 학생증/신분증 이미지에서 인적 정보(이름·소속·학번·전화)를 추출합니다. (#3)
+     * 프론트엔드가 수령인 관련 필드를 자동 채울 때 사용합니다.
+     */
+    @Transactional(readOnly = true)
+    public RecipientInfoResponse extractRecipient(MultipartFile recipientImage) {
+        if (recipientImage == null || recipientImage.isEmpty()) {
+            throw new IllegalArgumentException("수령인 이미지가 없습니다.");
+        }
+        String mimeType = resolveMimeType(recipientImage.getOriginalFilename());
+        if (!mimeType.startsWith("image/")) {
+            throw new IllegalArgumentException(
+                    "수령인 정보는 이미지 파일에서만 추출할 수 있습니다: " + recipientImage.getOriginalFilename());
+        }
+        byte[] bytes;
+        try {
+            bytes = recipientImage.getBytes();
+        } catch (IOException e) {
+            throw new RuntimeException("수령인 이미지 읽기 실패", e);
+        }
+
+        Map<String, String> info = evidenceAiService.extractRecipientInfo(bytes, mimeType);
+        log.info("수령인 정보 추출 완료 - name={}, affiliation={}, studentId={}, phone={}",
+                info.get("name"), info.get("affiliation"), info.get("studentId"), info.get("phone"));
+        return RecipientInfoResponse.builder()
+                .name(info.getOrDefault("name", ""))
+                .affiliation(info.getOrDefault("affiliation", ""))
+                .studentId(info.getOrDefault("studentId", ""))
+                .phone(info.getOrDefault("phone", ""))
                 .build();
     }
 

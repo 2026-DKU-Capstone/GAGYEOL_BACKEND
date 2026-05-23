@@ -200,7 +200,7 @@ public class FormFillService {
                     if (i + 1 < cells.size()) {
                         XWPFTableCell next = cells.get(i + 1);
                         if (next.getText().trim().isEmpty() && !usedCells.contains(next)) {
-                            if (addPictureToCell(next, fieldName, imageBytes, docxPicType, true)) {
+                            if (addPictureToCell(next, fieldName, imageBytes, docxPicType)) {
                                 usedCells.add(next);
                                 return true;
                             }
@@ -221,7 +221,7 @@ public class FormFillService {
                     String cellText = normalize(cellTextRaw);
                     if (!cellText.contains(normalizedField) && !normalizedField.contains(cellText)) continue;
 
-                    if (addPictureToCell(cell, fieldName, imageBytes, docxPicType, false)) {
+                    if (addPictureToCell(cell, fieldName, imageBytes, docxPicType)) {
                         usedCells.add(cell);
                         return true;
                     }
@@ -242,7 +242,7 @@ public class FormFillService {
                         String cellText = normalize(cellTextRaw);
                         if (!cellText.contains("부착") && !cellText.contains("사진") && !cellText.contains("이미지")) continue;
 
-                        if (addPictureToCell(cell, fieldName, imageBytes, docxPicType, false)) {
+                        if (addPictureToCell(cell, fieldName, imageBytes, docxPicType)) {
                             usedCells.add(cell);
                             return true;
                         }
@@ -259,26 +259,51 @@ public class FormFillService {
     }
 
     private boolean addPictureToCell(XWPFTableCell cell, String fieldName, byte[] imageBytes,
-                                      int docxPicType, boolean reuseFirstParagraph) {
+                                      int docxPicType) {
         try {
-            XWPFParagraph para;
-            if (reuseFirstParagraph) {
-                para = cell.getParagraphs().isEmpty() ? cell.addParagraph() : cell.getParagraphs().get(0);
-            } else {
-                // 레이블 텍스트 유지하고 새 단락에 이미지 추가
-                para = cell.addParagraph();
-            }
+            // 매칭 방식과 무관하게 셀의 기존 텍스트(레이블 등)를 제거한 뒤 이미지를 넣는다. (#5)
+            clearCellContent(cell);
+            XWPFParagraph para = cell.getParagraphs().isEmpty() ? cell.addParagraph() : cell.getParagraphs().get(0);
+            para.setAlignment(ParagraphAlignment.CENTER);
             XWPFRun run = para.createRun();
+            int[] dims = fitDimensionsEmu(imageBytes, 150, 190); // 원본 비율 유지하여 박스 안에 맞춤 (#5)
             try (ByteArrayInputStream imgStream = new ByteArrayInputStream(imageBytes)) {
-                run.addPicture(imgStream, docxPicType, fieldName,
-                        Units.toEMU(150), Units.toEMU(190));
+                run.addPicture(imgStream, docxPicType, fieldName, dims[0], dims[1]);
             }
-            log.info("DOCX 이미지 삽입 완료: {} ({} bytes)", fieldName, imageBytes.length);
+            log.info("DOCX 이미지 삽입 완료: {} ({} bytes, {}x{} EMU)", fieldName, imageBytes.length, dims[0], dims[1]);
             return true;
         } catch (InvalidFormatException | IOException e) {
             log.warn("DOCX 이미지 삽입 실패: {} - {}", fieldName, e.getMessage());
             return false;
         }
+    }
+
+    /** 셀의 모든 단락에서 run(텍스트)을 제거한다. 단락 구조는 유지하고 첫 단락을 이미지용으로 재사용한다. (#5) */
+    private void clearCellContent(XWPFTableCell cell) {
+        for (XWPFParagraph para : cell.getParagraphs()) {
+            for (int i = para.getRuns().size() - 1; i >= 0; i--) {
+                para.removeRun(i);
+            }
+        }
+    }
+
+    /**
+     * 이미지 원본 비율을 유지하면서 maxWpx×maxHpx 박스 안에 맞는 크기(EMU)를 계산한다.
+     * scale = min(maxW/원본W, maxH/원본H). 디코딩 실패 시 박스 크기를 그대로 사용한다. (#5)
+     */
+    int[] fitDimensionsEmu(byte[] imageBytes, int maxWpx, int maxHpx) {
+        try (ByteArrayInputStream bis = new ByteArrayInputStream(imageBytes)) {
+            BufferedImage img = ImageIO.read(bis);
+            if (img != null && img.getWidth() > 0 && img.getHeight() > 0) {
+                double scale = Math.min((double) maxWpx / img.getWidth(), (double) maxHpx / img.getHeight());
+                int w = Math.max(1, (int) Math.round(img.getWidth() * scale));
+                int h = Math.max(1, (int) Math.round(img.getHeight() * scale));
+                return new int[]{Units.toEMU(w), Units.toEMU(h)};
+            }
+        } catch (IOException e) {
+            log.warn("이미지 크기 계산 실패, 기본 박스 크기 사용 - {}", e.getMessage());
+        }
+        return new int[]{Units.toEMU(maxWpx), Units.toEMU(maxHpx)};
     }
 
     private void replacePlaceholders(XWPFParagraph paragraph, Map<String, String> allFields) {
@@ -347,8 +372,10 @@ public class FormFillService {
     // 셀의 모든 단락·run을 비우고 첫 run에만 값을 씀 (여러 단락으로 된 레이블 셀 교체용)
     private void clearCellText(XWPFTableCell cell, String value) {
         enableWordWrap(cell);
+        cell.setVerticalAlignment(XWPFTableCell.XWPFVertAlign.CENTER); // 값 수직 가운데 (#6)
         boolean valueSet = false;
         for (XWPFParagraph para : cell.getParagraphs()) {
+            para.setAlignment(ParagraphAlignment.CENTER); // 값 수평 가운데 (#6)
             for (int j = 0; j < para.getRuns().size(); j++) {
                 if (!valueSet) {
                     para.getRuns().get(j).setText(value, 0);
@@ -359,26 +386,29 @@ public class FormFillService {
             }
         }
         if (!valueSet) {
-            if (cell.getParagraphs().isEmpty()) {
-                cell.addParagraph().createRun().setText(value);
-            } else {
-                cell.getParagraphs().get(0).createRun().setText(value);
-            }
+            XWPFParagraph para = cell.getParagraphs().isEmpty()
+                    ? cell.addParagraph() : cell.getParagraphs().get(0);
+            para.setAlignment(ParagraphAlignment.CENTER);
+            para.createRun().setText(value);
         }
     }
 
     private void setCellText(XWPFTableCell cell, String value) {
         enableWordWrap(cell);
+        cell.setVerticalAlignment(XWPFTableCell.XWPFVertAlign.CENTER); // 값 수직 가운데 (#6)
+        XWPFParagraph para;
         if (cell.getParagraphs().isEmpty()) {
-            cell.addParagraph().createRun().setText(value);
+            para = cell.addParagraph();
+            para.createRun().setText(value);
         } else {
-            XWPFParagraph para = cell.getParagraphs().get(0);
+            para = cell.getParagraphs().get(0);
             if (para.getRuns().isEmpty()) {
                 para.createRun().setText(value);
             } else {
                 para.getRuns().get(0).setText(value, 0);
             }
         }
+        para.setAlignment(ParagraphAlignment.CENTER); // 값 수평 가운데 (#6)
     }
 
     private void enableWordWrap(XWPFTableCell cell) {
@@ -427,6 +457,9 @@ public class FormFillService {
         try (FileInputStream fis = new FileInputStream(filePath);
              Workbook workbook = WorkbookFactory.create(fis)) {
 
+            // 채운 셀에 적용할 가운데 정렬 스타일 캐시 (원본 스타일별로 1개만 생성해 스타일 수 폭증 방지) (#6)
+            Map<Short, CellStyle> centerStyleCache = new java.util.HashMap<>();
+
             for (int si = 0; si < workbook.getNumberOfSheets(); si++) {
                 Sheet sheet = workbook.getSheetAt(si);
                 for (Row row : sheet) {
@@ -460,6 +493,7 @@ public class FormFillService {
                                     if (target == null) target = targetRow.createCell(ci);
                                     else if (target.getCellType() != CellType.BLANK) continue; // 기존 데이터/수식 보존
                                     target.setCellValue(v);
+                                    applyCenter(workbook, target, centerStyleCache); // (#6)
                                 }
                                 log.debug("XLSX 필드 채우기(다중행, {}개): {}", rowValues.size(), field);
                             } else {
@@ -468,6 +502,7 @@ public class FormFillService {
                                 if (rightCell == null || rightCell.getCellType() == CellType.BLANK) {
                                     if (rightCell == null) rightCell = row.createCell(ci + 1);
                                     rightCell.setCellValue(value);
+                                    applyCenter(workbook, rightCell, centerStyleCache); // (#6)
                                     log.debug("XLSX 필드 채우기(오른쪽): {} = {}", field, value);
                                 } else {
                                     Row nextRow = sheet.getRow(row.getRowNum() + 1);
@@ -476,6 +511,7 @@ public class FormFillService {
                                     if (belowCell == null || belowCell.getCellType() == CellType.BLANK) {
                                         if (belowCell == null) belowCell = nextRow.createCell(ci);
                                         belowCell.setCellValue(value);
+                                        applyCenter(workbook, belowCell, centerStyleCache); // (#6)
                                         log.debug("XLSX 필드 채우기(아래): {} = {}", field, value);
                                     }
                                 }
@@ -494,6 +530,22 @@ public class FormFillService {
             workbook.write(out);
             return out.toByteArray();
         }
+    }
+
+    /**
+     * 채운 셀에 가운데 정렬을 적용한다. 원본 셀 스타일(테두리·폰트·서식)을 복제한 뒤
+     * 정렬만 변경해 기존 양식 서식을 보존하고, 원본 스타일별로 1개만 만들어 캐시한다. (#6)
+     */
+    private void applyCenter(Workbook workbook, Cell cell, Map<Short, CellStyle> cache) {
+        CellStyle source = cell.getCellStyle();
+        CellStyle centered = cache.computeIfAbsent(source.getIndex(), idx -> {
+            CellStyle s = workbook.createCellStyle();
+            s.cloneStyleFrom(source);
+            s.setAlignment(HorizontalAlignment.CENTER);
+            s.setVerticalAlignment(VerticalAlignment.CENTER);
+            return s;
+        });
+        cell.setCellStyle(centered);
     }
 
     /**
@@ -604,6 +656,7 @@ public class FormFillService {
             Drawing<?> drawing = sheet.createDrawingPatriarch();
             ClientAnchor anchor = helper.createClientAnchor();
             int col1 = anchorToRight ? labelCol + 1 : labelCol;
+            clearXlsxCellText(sheet, labelRow, col1); // 이미지가 덮을 셀의 기존 텍스트 제거 (#5)
             anchor.setCol1(col1);
             anchor.setRow1(labelRow);
             anchor.setCol2(col1 + 2);
@@ -614,6 +667,16 @@ public class FormFillService {
         } catch (Exception e) {
             log.warn("XLSX 이미지 삽입 실패: {} - {}", fieldName, e.getMessage());
             return false;
+        }
+    }
+
+    /** 이미지가 덮을 셀의 문자열 텍스트를 제거한다 (이미지 뒤로 글자가 비치지 않도록). (#5) */
+    private void clearXlsxCellText(Sheet sheet, int rowIdx, int colIdx) {
+        Row row = sheet.getRow(rowIdx);
+        if (row == null) return;
+        Cell cell = row.getCell(colIdx);
+        if (cell != null && cell.getCellType() == CellType.STRING) {
+            cell.setBlank();
         }
     }
 

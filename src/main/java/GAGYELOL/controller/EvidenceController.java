@@ -7,6 +7,7 @@ import GAGYELOL.dto.EvidenceListResponse;
 import GAGYELOL.dto.EvidenceResponse;
 import GAGYELOL.dto.FillFieldsRequest;
 import GAGYELOL.dto.FillFieldsResponse;
+import GAGYELOL.dto.RecipientInfoResponse;
 import GAGYELOL.service.EvidenceService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.ContentDisposition;
@@ -61,6 +62,13 @@ public class EvidenceController {
     ) {
         Long userId = jwtUtil.extractUserId(token.replace("Bearer ", ""));
         return ResponseEntity.ok(evidenceService.analyze(file, userId, groupId, businessName, recipientImage));
+    }
+
+    @PostMapping("/extract-recipient")
+    public ResponseEntity<RecipientInfoResponse> extractRecipient(
+            @RequestParam("recipientImage") MultipartFile recipientImage
+    ) {
+        return ResponseEntity.ok(evidenceService.extractRecipient(recipientImage));
     }
 
     @PostMapping("/{evidenceId}/fill")
