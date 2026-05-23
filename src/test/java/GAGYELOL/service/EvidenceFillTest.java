@@ -189,9 +189,10 @@ class EvidenceFillTest {
                 .group(group)
                 .build();
 
+        // "지출자"는 단독이면 이름으로, "지출자 소속"은 소속으로 채워진다
         Form form = Form.builder()
                 .formName("지출결의서")
-                .formFields("[\"지출인 성명\",\"지출자 소속\",\"금액\"]")
+                .formFields("[\"지출인 성명\",\"지출자 소속\",\"지출자\",\"금액\"]")
                 .generatedFields("[]")
                 .build();
 
@@ -211,6 +212,7 @@ class EvidenceFillTest {
         FillFieldsResponse.FormFillResult result = response.getResults().get(0);
         assertThat(result.getFilledFields()).containsEntry("지출인 성명", "홍길동");
         assertThat(result.getFilledFields()).containsEntry("지출자 소속", "소프트웨어학과");
+        assertThat(result.getFilledFields()).containsEntry("지출자", "홍길동");
         assertThat(result.getFilledFields()).containsEntry("금액", "50000");
         assertThat(result.getMissingFields()).isEmpty();
         // 핵심: 지출자/지출인은 영수증 IE 호출 대상에서 빠지고 "금액"만 전달됨
@@ -218,12 +220,15 @@ class EvidenceFillTest {
     }
 
     @Test
-    void fillFields_검토자_필드는_항상_미입력이고_영수증추출_제외() throws Exception {
-        // given
+    void fillFields_검토자_필드도_그룹등록정보로_채우고_영수증추출_제외() throws Exception {
+        // given — 그룹에 지출인 정보가 등록되어 있음
         Path evidenceFile = tempDir.resolve("evidence5.pdf");
         Files.write(evidenceFile, "dummy".getBytes());
 
-        UserGroup group = UserGroup.builder().payerName("홍길동").build();
+        UserGroup group = UserGroup.builder()
+                .payerName("홍길동")
+                .payerAffiliation("소프트웨어학과")
+                .build();
 
         Evidence evidence = Evidence.builder()
                 .filePath(evidenceFile.toString())
@@ -231,7 +236,7 @@ class EvidenceFillTest {
                 .group(group)
                 .build();
 
-        // "검토자 소속"은 "소속"을 포함하지만 검토자 판정이 우선이라 지출인 소속으로 채워지면 안 됨
+        // "검토자"는 단독이면 이름, "검토자 소속"은 소속으로 채워진다
         Form form = Form.builder()
                 .formName("지출결의서")
                 .formFields("[\"검토자\",\"검토자 소속\",\"금액\"]")
@@ -249,11 +254,12 @@ class EvidenceFillTest {
         // when
         FillFieldsResponse response = evidenceService.fillFields(5L, request);
 
-        // then
+        // then — 검토자도 그룹 등록 지출인 정보로 채워진다
         FillFieldsResponse.FormFillResult result = response.getResults().get(0);
-        assertThat(result.getMissingFields()).contains("검토자", "검토자 소속");
-        assertThat(result.getFilledFields()).doesNotContainKey("검토자 소속");
+        assertThat(result.getFilledFields()).containsEntry("검토자", "홍길동");
+        assertThat(result.getFilledFields()).containsEntry("검토자 소속", "소프트웨어학과");
         assertThat(result.getFilledFields()).containsEntry("금액", "50000");
+        assertThat(result.getMissingFields()).isEmpty();
         // 검토자 필드는 영수증 IE 호출 대상에서 빠지고 "금액"만 전달됨
         verify(evidenceAiService).fillFormFields(any(), any(), eq(List.of("금액")));
     }
@@ -274,7 +280,7 @@ class EvidenceFillTest {
 
         Form form = Form.builder()
                 .formName("지출결의서")
-                .formFields("[\"지출인 성명\",\"금액\"]")
+                .formFields("[\"지출인 성명\",\"검토자\",\"금액\"]")
                 .generatedFields("[]")
                 .build();
 
@@ -289,10 +295,11 @@ class EvidenceFillTest {
         // when
         FillFieldsResponse response = evidenceService.fillFields(6L, request);
 
-        // then — 등록 정보가 없으므로 영수증에서 찾지 않고 미입력으로 표시
+        // then — 등록 정보가 없으므로 영수증에서 찾지 않고 미입력으로 표시 (지출인/검토자 모두)
         FillFieldsResponse.FormFillResult result = response.getResults().get(0);
-        assertThat(result.getMissingFields()).contains("지출인 성명");
+        assertThat(result.getMissingFields()).contains("지출인 성명", "검토자");
         assertThat(result.getFilledFields()).doesNotContainKey("지출인 성명");
+        assertThat(result.getFilledFields()).doesNotContainKey("검토자");
         assertThat(result.getFilledFields()).containsEntry("금액", "50000");
         verify(evidenceAiService).fillFormFields(any(), any(), eq(List.of("금액")));
     }

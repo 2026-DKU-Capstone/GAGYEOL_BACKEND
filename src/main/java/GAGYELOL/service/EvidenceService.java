@@ -291,23 +291,18 @@ public class EvidenceService {
             List<String> missingFields = new ArrayList<>();
 
             // [경로 0] 인적 필드(지출자/지출인/검토자)는 영수증에서 추출하지 않고
-            //          로그인/그룹 등록 정보로만 채운다. 못 채우면 미입력으로 표시한다.
-            //   - 지출자/지출인: 그룹 등록 지출인 정보(UserGroup.payer*)로 채우고, 없으면 missing
-            //   - 검토자: 등록된 사람 정보가 없으므로 항상 missing (검토자가 소속/학번을 포함해도 지출인 값으로 채우지 않도록 먼저 검사)
+            //          그룹 등록 지출인 정보(UserGroup.payer*)로만 채운다. 못 채우면 미입력으로 표시한다.
             List<String> remainingAfterPayer = new ArrayList<>();
             UserGroup group = evidence.getGroup();
             for (String field : formFields) {
-                if (isReviewerField(field)) {
-                    missingFields.add(field);
-                    log.info("검토자 필드 - 등록 정보 없음, 미입력 처리: {}", field);
-                } else if (isPayerField(field)) {
-                    String payerValue = resolvePayerField(field, group);
-                    if (payerValue != null && !payerValue.isBlank()) {
-                        filledFields.put(field, payerValue);
-                        log.info("지출자/지출인 정보 채우기: {} = {}", field, payerValue);
+                if (isPersonField(field)) {
+                    String personValue = resolvePersonField(field, group);
+                    if (personValue != null && !personValue.isBlank()) {
+                        filledFields.put(field, personValue);
+                        log.info("인적 필드 채우기: {} = {}", field, personValue);
                     } else {
                         missingFields.add(field);
-                        log.info("지출자/지출인 필드 - 등록 정보 없음, 미입력 처리: {}", field);
+                        log.info("인적 필드 - 등록 정보 없음, 미입력 처리: {}", field);
                     }
                 } else {
                     remainingAfterPayer.add(field);
@@ -549,23 +544,19 @@ public class EvidenceService {
         }
     }
 
-    /** 지출자/지출인 인적 필드인지 판별. 이 필드들은 영수증이 아니라 그룹 등록 정보로만 채운다. */
-    private static boolean isPayerField(String field) {
-        return field.contains("지출인") || field.contains("지출자");
+    /** 지출자/지출인/검토자 인적 필드인지 판별. 이 필드들은 영수증이 아니라 그룹 등록 지출인 정보로만 채운다. */
+    private static boolean isPersonField(String field) {
+        return field.contains("지출인") || field.contains("지출자") || field.contains("검토자");
     }
 
-    /** 검토자 인적 필드인지 판별. 등록된 사람 정보가 없어 항상 미입력으로 표시한다. */
-    private static boolean isReviewerField(String field) {
-        return field.contains("검토자");
-    }
-
-    private String resolvePayerField(String field, UserGroup group) {
-        if (group == null || !isPayerField(field)) return null;
+    private String resolvePersonField(String field, UserGroup group) {
+        if (group == null || !isPersonField(field)) return null;
         if (field.contains("이름") || field.contains("성명")) return group.getPayerName();
         if (field.contains("소속")) return group.getPayerAffiliation();
         if (field.contains("학번") || field.contains("사번")) return group.getPayerStudentId();
         if (field.contains("전화") || field.contains("연락")) return group.getPayerPhone();
-        return null;
+        // 세부 항목 키워드 없이 단독으로 오는 필드(예: "지출자", "검토자")는 이름으로 채운다.
+        return group.getPayerName();
     }
 
     private String buildFormListDescription(List<Form> forms) {
