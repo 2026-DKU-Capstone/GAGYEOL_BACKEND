@@ -124,6 +124,7 @@ public class FormService {
                 .paymentType(normalizedType)
                 .fields(fieldList)
                 .generatedFields(generatedFieldList)
+                .createdAt(form.getCreatedAt())
                 .build();
     }
 
