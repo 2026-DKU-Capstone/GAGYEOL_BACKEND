@@ -287,22 +287,8 @@ public class FormFillService {
         }
     }
 
-    /**
-     * 이미지 원본 비율을 유지하면서 maxWpx×maxHpx 박스 안에 맞는 크기(EMU)를 계산한다.
-     * scale = min(maxW/원본W, maxH/원본H). 디코딩 실패 시 박스 크기를 그대로 사용한다. (#5)
-     */
+    /** 셀 박스를 꽉 채우는 크기(EMU)를 반환한다. */
     int[] fitDimensionsEmu(byte[] imageBytes, int maxWpx, int maxHpx) {
-        try (ByteArrayInputStream bis = new ByteArrayInputStream(imageBytes)) {
-            BufferedImage img = ImageIO.read(bis);
-            if (img != null && img.getWidth() > 0 && img.getHeight() > 0) {
-                double scale = Math.min((double) maxWpx / img.getWidth(), (double) maxHpx / img.getHeight());
-                int w = Math.max(1, (int) Math.round(img.getWidth() * scale));
-                int h = Math.max(1, (int) Math.round(img.getHeight() * scale));
-                return new int[]{Units.toEMU(w), Units.toEMU(h)};
-            }
-        } catch (IOException e) {
-            log.warn("이미지 크기 계산 실패, 기본 박스 크기 사용 - {}", e.getMessage());
-        }
         return new int[]{Units.toEMU(maxWpx), Units.toEMU(maxHpx)};
     }
 
