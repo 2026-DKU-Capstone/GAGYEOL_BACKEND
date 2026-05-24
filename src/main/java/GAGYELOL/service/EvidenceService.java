@@ -660,28 +660,27 @@ public class EvidenceService {
         return group.getPayerName();
     }
 
-    /** 역할 기반 인적 필드를 그룹 멤버 역할(roleName)로 조회해 반환한다. */
+    /** 역할 기반 인적 필드를 그룹 멤버 역할(roleName)로 조회해 반환한다.
+     *  부회장/감사/총무는 해당 역할명 매칭, 검토자·회장 등은 회장 역할 멤버로 채운다. */
     private String resolveRolePersonField(String field, UserGroup group) {
         if (group == null) return null;
-        // 검토자 → 가장 높은 결재 순위(approvalOrder) 멤버의 이름
-        if (field.contains("검토자")) {
-            return groupMemberRepository.findByGroup(group).stream()
-                    .filter(m -> m.getRole() != null)
-                    .max(Comparator.comparingInt(m -> m.getRole().getApprovalOrder()))
-                    .map(m -> m.getUser().getName())
-                    .orElse(null);
-        }
-        // 회장/부회장/감사/총무 → roleName에 해당 키워드가 포함된 멤버의 이름
-        for (String keyword : List.of("회장", "부회장", "감사", "총무")) {
+        List<GAGYELOL.entity.GroupMember> members = groupMemberRepository.findByGroup(group);
+        // 부회장/감사/총무는 해당 키워드 roleName 매칭
+        for (String keyword : List.of("부회장", "감사", "총무")) {
             if (field.contains(keyword)) {
-                return groupMemberRepository.findByGroup(group).stream()
+                return members.stream()
                         .filter(m -> m.getRole() != null && m.getRole().getRoleName().contains(keyword))
                         .findFirst()
                         .map(m -> m.getUser().getName())
                         .orElse(null);
             }
         }
-        return null;
+        // 회장/검토자 등 나머지 → 회장 역할 멤버
+        return members.stream()
+                .filter(m -> m.getRole() != null && m.getRole().getRoleName().contains("회장"))
+                .findFirst()
+                .map(m -> m.getUser().getName())
+                .orElse(null);
     }
 
     private String buildFormListDescription(List<Form> forms) {
