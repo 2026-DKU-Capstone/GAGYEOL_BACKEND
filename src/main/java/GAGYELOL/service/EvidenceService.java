@@ -321,24 +321,17 @@ public class EvidenceService {
                 }
             }
 
-            // [경로 1] generatedFields → 사업명 기반 LLM 생성
+            // [경로 1] 증빙 파일에서 Upstage IE 추출 (generatedFields 제외)
+            List<String> generatedFieldsList = new ArrayList<>();
             List<String> directFields = new ArrayList<>();
             for (String field : remainingAfterPayer) {
                 if (generatedFieldSet.contains(field)) {
-                    if (businessName != null && !businessName.isBlank()) {
-                        String groupDescription = (group != null) ? group.getDescription() : null;
-                        String content = formAiService.generateFieldContent(businessName, groupDescription, field);
-                        filledFields.put(field, content);
-                        log.info("LLM 생성 필드: {} = {}", field, content);
-                    } else {
-                        missingFields.add(field);
-                    }
+                    generatedFieldsList.add(field);
                 } else {
                     directFields.add(field);
                 }
             }
 
-            // [경로 2] 증빙 파일에서 Upstage IE 추출
             if (!directFields.isEmpty()) {
                 byte[] evidenceBytes;
                 try {
@@ -382,6 +375,18 @@ public class EvidenceService {
                     }
                 } else {
                     missingFields.addAll(stillMissing);
+                }
+            }
+
+            // [경로 2] generatedFields → OCR 결과 포함해 LLM 생성
+            for (String field : generatedFieldsList) {
+                if (businessName != null && !businessName.isBlank()) {
+                    String groupDescription = (group != null) ? group.getDescription() : null;
+                    String content = formAiService.generateFieldContent(businessName, groupDescription, field, filledFields);
+                    filledFields.put(field, content);
+                    log.info("LLM 생성 필드: {} = {}", field, content);
+                } else {
+                    missingFields.add(field);
                 }
             }
 

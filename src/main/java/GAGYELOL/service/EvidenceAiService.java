@@ -124,6 +124,7 @@ public class EvidenceAiService {
     /**
      * 추출 스키마의 필드 설명을 만든다. 금액성 필드에는 음수 기호를 제거한 절댓값으로,
      * 부가세·공급가액 등 세부 금액이 여러 개면 모두 합산한 총합 하나만 반환하도록 지침을 덧붙인다. (#4)
+     * 날짜성 필드에는 대표 날짜 하나만, 시간 제외하여 반환하도록 지침을 덧붙인다.
      */
     private static String fieldDescription(String field) {
         String base = field + " 항목의 값";
@@ -131,12 +132,22 @@ public class EvidenceAiService {
             return base + ". 금액은 음수 기호(-)를 제거하고 절댓값(양수)으로만 반환하고, "
                     + "공급가액·부가세 등 세부 금액 항목이 여러 개이면 모두 합산한 총합 금액 하나만 숫자로 반환할 것";
         }
+        if (isDateField(field)) {
+            return base + ". 날짜가 여러 개 있으면 가장 대표적인 날짜 하나만 반환할 것. "
+                    + "시간(시각, HH:MM 등)은 포함하지 말 것. "
+                    + "형식은 YYYY년 MM월 DD일 또는 YY/MM/DD 중 원문 맥락에 맞는 것으로 통일할 것";
+        }
         return base;
     }
 
     private static boolean isAmountField(String field) {
         return field.contains("금액") || field.contains("합계") || field.contains("총액")
                 || field.contains("단가") || field.contains("비용") || field.endsWith("액");
+    }
+
+    private static boolean isDateField(String field) {
+        return field.contains("날짜") || field.contains("일자") || field.contains("일시")
+                || field.contains("기간") || field.endsWith("일");
     }
 
     /**
