@@ -319,6 +319,28 @@ public class GroupService {
         log.info("역할 삭제 완료 - groupId={}, roleId={}", groupId, roleId);
     }
 
+    public void assertMaxRole(User user, UserGroup group) {
+        GroupMember member = memberRepository.findByGroupAndUser(group, user)
+                .orElseThrow(() -> new IllegalArgumentException("해당 그룹의 멤버가 아닙니다."));
+        int maxOrder = roleRepository.findByGroupOrderByApprovalOrderAsc(group).stream()
+                .mapToInt(GroupRole::getApprovalOrder).max().orElse(0);
+        if (member.getRole().getApprovalOrder() < maxOrder) {
+            throw new org.springframework.web.server.ResponseStatusException(
+                    org.springframework.http.HttpStatus.FORBIDDEN, "그룹 최고 권한자만 가능합니다.");
+        }
+    }
+
+    @Transactional(readOnly = true)
+    public boolean isTopApprover(Long userId, Long groupId) {
+        User user = findUser(userId);
+        UserGroup group = findGroup(groupId);
+        GroupMember member = memberRepository.findByGroupAndUser(group, user).orElse(null);
+        if (member == null) return false;
+        int maxOrder = roleRepository.findByGroupOrderByApprovalOrderAsc(group).stream()
+                .mapToInt(GroupRole::getApprovalOrder).max().orElse(-1);
+        return member.getRole().getApprovalOrder() == maxOrder;
+    }
+
     private String generateInviteCode() {
         return UUID.randomUUID().toString().replace("-", "").substring(0, 8).toUpperCase();
     }

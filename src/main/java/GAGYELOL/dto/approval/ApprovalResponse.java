@@ -13,6 +13,7 @@ public class ApprovalResponse {
     private Long requestId;
     private String status;
     private String businessName;
+    private String formName;
     private Integer currentApprovalOrder;
     private Map<String, String> filledFields;
     private List<StepSummary> steps;

@@ -72,6 +72,11 @@ public class ApprovalService {
             throw new IllegalArgumentException("해당 양식지는 이 그룹의 것이 아닙니다.");
         }
 
+        // 동일 evidenceId + formId 조합의 IN_PROGRESS 결재 중복 방지
+        if (requestRepository.existsByEvidenceAndFormAndStatus(evidence, form, "IN_PROGRESS")) {
+            throw new IllegalArgumentException("동일한 증빙서류와 양식지로 이미 진행 중인 결재가 있습니다.");
+        }
+
         // 재결재: parentRequestId가 있으면 이전 filled_fields 복사 (요청 값이 있으면 덮어씀)
         ApprovalRequest parentRequest = null;
         if (req.getParentRequestId() != null) {
@@ -282,6 +287,10 @@ public class ApprovalService {
 
         return ApprovalHistoryResponse.builder()
                 .requestId(request.getId())
+                .requesterUserId(request.getRequester().getId())
+                .evidenceId(request.getEvidence() != null ? request.getEvidence().getId() : null)
+                .formId(request.getForm() != null ? request.getForm().getId() : null)
+                .formName(request.getForm() != null ? request.getForm().getFormName() : null)
                 .status(request.getStatus())
                 .currentApprovalOrder(request.getCurrentApprovalOrder())
                 .filledFields(fromJson(request.getFilledFields()))
@@ -336,6 +345,67 @@ public class ApprovalService {
         return toResponse(newRequest);
     }
 
+    @Transactional(readOnly = true)
+    public List<ApprovalResponse> getPendingForMe(Long userId) {
+        User user = findUser(userId);
+        return stepRepository.findByApproverAndAction(user, "PENDING").stream()
+                .map(ApprovalStep::getRequest)
+                .filter(r -> "IN_PROGRESS".equals(r.getStatus()))
+                .distinct()
+                .map(this::toResponse)
+                .toList();
+    }
+
+    public void deleteRequest(Long deleterId, Long requestId) {
+        User deleter = findUser(deleterId);
+        ApprovalRequest request = findRequest(requestId);
+        UserGroup group = request.getGroup();
+
+        GroupMember deleterMember = memberRepository.findByGroupAndUser(group, deleter)
+                .orElseThrow(() -> new IllegalArgumentException("해당 그룹의 멤버가 아닙니다."));
+
+        int maxOrder = roleRepository.findByGroupOrderByApprovalOrderAsc(group).stream()
+                .mapToInt(GroupRole::getApprovalOrder).max().orElse(-1);
+
+        if (deleterMember.getRole().getApprovalOrder() != maxOrder) {
+            throw new IllegalArgumentException("삭제 권한이 없습니다. 최고 권한자만 삭제할 수 있습니다.");
+        }
+
+        editHistoryRepository.deleteByRequest(request);
+        stepRepository.deleteAll(stepRepository.findByRequest(request));
+        requestRepository.delete(request);
+        log.info("결재요청 삭제 - requestId={}, deleterId={}", requestId, deleterId);
+    }
+
+    public ApprovalResponse cancel(Long userId, Long requestId) {
+        User user = findUser(userId);
+        ApprovalRequest request = findRequest(requestId);
+
+        if (!"APPROVED".equals(request.getStatus())) {
+            throw new IllegalArgumentException("승인 완료 상태인 결재만 취소할 수 있습니다.");
+        }
+
+        boolean isRequester = request.getRequester().getId().equals(userId);
+        boolean isTopApprover = false;
+        if (request.getGroup() != null) {
+            GroupMember member = memberRepository.findByGroupAndUser(request.getGroup(), user).orElse(null);
+            if (member != null) {
+                int maxOrder = roleRepository.findByGroupOrderByApprovalOrderAsc(request.getGroup())
+                        .stream().mapToInt(GroupRole::getApprovalOrder).max().orElse(-1);
+                isTopApprover = member.getRole().getApprovalOrder() == maxOrder;
+            }
+        }
+
+        if (!isRequester && !isTopApprover) {
+            throw new IllegalArgumentException("취소 권한이 없습니다. 요청자 또는 최고 권한자만 취소할 수 있습니다.");
+        }
+
+        request.updateStatus("CANCELED");
+        requestRepository.save(request);
+        log.info("결재 취소 - requestId={}, cancelerId={}", requestId, userId);
+        return toResponse(request);
+    }
+
     // ────────────── 내부 헬퍼 ──────────────
 
     private void createPendingSteps(ApprovalRequest request, UserGroup group, int approvalOrder) {
@@ -387,11 +457,13 @@ public class ApprovalService {
         List<ApprovalStep> steps = stepRepository.findByRequest(request);
         Map<String, String> fields = fromJson(request.getFilledFields());
 
-        String businessName = request.getEvidence() != null ? request.getEvidence().getBusinessName() : null;
+        String businessName = fields.get("사업명");
+        String formName = request.getForm() != null ? request.getForm().getFormName() : null;
         return ApprovalResponse.builder()
                 .requestId(request.getId())
                 .status(request.getStatus())
                 .businessName(businessName)
+                .formName(formName)
                 .currentApprovalOrder(request.getCurrentApprovalOrder())
                 .filledFields(fields)
                 .steps(steps.stream()

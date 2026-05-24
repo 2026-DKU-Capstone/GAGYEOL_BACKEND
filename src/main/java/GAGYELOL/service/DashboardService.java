@@ -42,8 +42,12 @@ public class DashboardService {
         List<ApprovalRequest> prevMonth = requestRepository
                 .findByRequesterIdAndGroupIdAndCreatedAtBetween(userId, groupId, prevMonthStart, prevMonthEnd);
 
-        long monthlyAmount = thisMonth.stream().mapToLong(r -> extractAmount(r.getFilledFields())).sum();
-        long prevMonthAmount = prevMonth.stream().mapToLong(r -> extractAmount(r.getFilledFields())).sum();
+        long monthlyAmount = thisMonth.stream()
+                .filter(r -> "APPROVED".equals(r.getStatus()))
+                .mapToLong(r -> extractAmount(r.getFilledFields())).sum();
+        long prevMonthAmount = prevMonth.stream()
+                .filter(r -> "APPROVED".equals(r.getStatus()))
+                .mapToLong(r -> extractAmount(r.getFilledFields())).sum();
 
         List<ApprovalRequest> inProgressList = requestRepository
                 .findByRequesterIdAndGroupIdAndStatus(userId, groupId, "IN_PROGRESS");
@@ -144,13 +148,13 @@ public class DashboardService {
     }
 
     private String resolveTitle(ApprovalRequest r) {
-        if (r.getForm() != null && r.getForm().getFormName() != null) {
-            return r.getForm().getFormName();
-        }
-        if (r.getEvidence() != null && r.getEvidence().getFileName() != null) {
-            String name = r.getEvidence().getFileName();
-            return name.contains(".") ? name.substring(0, name.lastIndexOf('.')) : name;
-        }
+        try {
+            Map<String, String> fields = objectMapper.readValue(
+                    r.getFilledFields() != null ? r.getFilledFields() : "{}", new com.fasterxml.jackson.core.type.TypeReference<>() {});
+            String businessName = fields.get("사업명");
+            if (businessName != null && !businessName.isBlank()) return businessName;
+        } catch (Exception ignored) {}
+        if (r.getForm() != null && r.getForm().getFormName() != null) return r.getForm().getFormName();
         return "지출결의서";
     }
 

@@ -37,6 +37,7 @@ public class PolicyService {
     private final EmbeddingService embeddingService;
     private final PolicyAiService policyAiService;
     private final GAGYELOL.repository.UserGroupRepository groupRepository;
+    private final GroupService groupService;
 
     @Value("${file.upload.policy-dir:./uploads/policies}")
     private String uploadDir;
@@ -45,7 +46,9 @@ public class PolicyService {
         User user = userRepository.findById(userId)
                 .orElseThrow(() -> new IllegalArgumentException("사용자를 찾을 수 없습니다."));
         GAGYELOL.entity.UserGroup group = groupId != null
-                ? groupRepository.findById(groupId).orElse(null) : null;
+                ? groupRepository.findById(groupId).orElseThrow(() -> new IllegalArgumentException("그룹을 찾을 수 없습니다.")) : null;
+
+        if (group != null) groupService.assertMaxRole(user, group);
 
         // 1. 파일 저장
         String filePath = saveFile(file);
@@ -141,9 +144,12 @@ public class PolicyService {
         return PolicyResponse.from(policy);
     }
 
-    public void delete(Long policyId) {
+    public void delete(Long policyId, Long userId) {
         Policy policy = policyRepository.findById(policyId)
                 .orElseThrow(() -> new IllegalArgumentException("규정책을 찾을 수 없습니다."));
+        User user = userRepository.findById(userId)
+                .orElseThrow(() -> new IllegalArgumentException("사용자를 찾을 수 없습니다."));
+        if (policy.getGroup() != null) groupService.assertMaxRole(user, policy.getGroup());
         vectorStore.deleteByPolicyId(policyId);
         policyRepository.delete(policy);
         log.info("규정책 삭제 완료 - policyId={}", policyId);

@@ -78,6 +78,7 @@ public class EvidenceService {
                             .orElse(e.getCreatedAt());
                     return GAGYELOL.dto.EvidenceListResponse.builder()
                             .evidenceId(e.getId())
+                            .requestId(approval.map(a -> a.getId()).orElse(null))
                             .businessName(e.getBusinessName())
                             .title(e.getBusinessName())
                             .status(status)

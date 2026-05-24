@@ -11,6 +11,10 @@ import java.util.Map;
 @Builder
 public class ApprovalHistoryResponse {
     private Long requestId;
+    private Long requesterUserId;
+    private Long evidenceId;
+    private Long formId;
+    private String formName;
     private String status;
     private Integer currentApprovalOrder;
     private Map<String, String> filledFields;
