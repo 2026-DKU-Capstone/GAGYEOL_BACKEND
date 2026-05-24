@@ -15,6 +15,7 @@ import GAGYELOL.repository.ApprovalRequestRepository;
 import GAGYELOL.repository.EvidenceFormRepository;
 import GAGYELOL.repository.EvidenceRepository;
 import GAGYELOL.repository.FormRepository;
+import GAGYELOL.repository.GroupMemberRepository;
 import GAGYELOL.repository.PolicyChunkVectorStore;
 import GAGYELOL.repository.UserGroupRepository;
 import GAGYELOL.repository.UserRepository;
@@ -52,6 +53,7 @@ public class EvidenceService {
     private final FormRepository formRepository;
     private final UserRepository userRepository;
     private final UserGroupRepository groupRepository;
+    private final GroupMemberRepository groupMemberRepository;
     private final PolicyChunkVectorStore vectorStore;
     private final EmbeddingService embeddingService;
     private final EvidenceAiService evidenceAiService;
@@ -195,10 +197,10 @@ public class EvidenceService {
                 .recipientImagePath(recipientImagePath)
                 .build());
 
-        // 5. 결제 유형에 맞는 양식지 목록 반환
+        // 5. 그룹의 모든 양식지 반환 (paymentType 필터 제거 - GPT 분류 비결정성 대응)
         List<Form> forms = group != null
-                ? formRepository.findByGroupAndPaymentTypeIn(group, List.of(paymentType, "BOTH"))
-                : formRepository.findByPaymentTypeIn(List.of(paymentType, "BOTH"));
+                ? formRepository.findByGroup(group)
+                : formRepository.findAll();
         log.info("양식지 {}개 로드 완료 (결제유형: {})", forms.size(), paymentType);
 
         List<EvidenceAnalysisResponse.FormSummary> formSummaries = forms.stream()
@@ -206,7 +208,8 @@ public class EvidenceService {
                     List<String> fields = List.of();
                     try { fields = objectMapper.readValue(f.getFormFields(), new TypeReference<>() {}); }
                     catch (Exception ignored) {}
-                    double score = f.getPaymentType().equalsIgnoreCase(paymentType) ? 1.0 : 0.8;
+                    double score = f.getPaymentType().equalsIgnoreCase(paymentType) ? 1.0
+                            : f.getPaymentType().equalsIgnoreCase("BOTH") ? 0.9 : 0.8;
                     return EvidenceAnalysisResponse.FormSummary.builder()
                             .formId(f.getId())
                             .formName(f.getFormName())
@@ -315,6 +318,25 @@ public class EvidenceService {
                     } else {
                         missingFields.add(field);
                         log.info("사업명 필드 - 입력값 없음, 미입력 처리: {}", field);
+                    }
+                } else if (isRolePersonField(field)) {
+                    // 회장/검토자/감사 등 역할 기반 필드는 그룹 멤버 역할로 조회한다.
+                    String roleValue = resolveRolePersonField(field, group);
+                    if (roleValue != null && !roleValue.isBlank()) {
+                        filledFields.put(field, roleValue);
+                        log.info("역할 인적 필드 채우기: {} = {}", field, roleValue);
+                    } else {
+                        missingFields.add(field);
+                        log.info("역할 인적 필드 - 역할 정보 없음, 미입력 처리: {}", field);
+                    }
+                } else if (isOrgField(field)) {
+                    // 학생회/단체명 등 조직 정보 필드는 그룹 이름으로 채운다.
+                    String orgValue = group != null ? group.getName() : null;
+                    if (orgValue != null && !orgValue.isBlank()) {
+                        filledFields.put(field, orgValue);
+                        log.info("조직 정보 필드 채우기: {} = {}", field, orgValue);
+                    } else {
+                        missingFields.add(field);
                     }
                 } else {
                     remainingAfterPayer.add(field);
@@ -594,14 +616,26 @@ public class EvidenceService {
         }
     }
 
-    /** 지출자/지출인/검토자 인적 필드인지 판별. 이 필드들은 영수증이 아니라 그룹 등록 지출인 정보로만 채운다. */
+    /** 지출자/지출인 인적 필드인지 판별. 그룹 등록 지출인 정보(payerName 등)로 채운다. */
     private static boolean isPersonField(String field) {
-        return field.contains("지출인") || field.contains("지출자") || field.contains("검토자");
+        return field.contains("지출인") || field.contains("지출자");
     }
 
-    /** 사업명/행사명 식별 필드인지 판별. 이 필드는 영수증 OCR이 아니라 사용자가 입력한 사업명으로 채운다. */
+    /** 사업명/행사명 식별 필드인지 판별. 사용자가 입력한 사업명으로 채운다. */
     private static boolean isBusinessNameField(String field) {
         return field.contains("사업명") || field.contains("행사명");
+    }
+
+    /** 검토자/회장/부회장/감사 등 역할 기반 인적 필드인지 판별. 그룹 멤버 역할로 채운다. */
+    private static boolean isRolePersonField(String field) {
+        return field.contains("검토자") || field.contains("회장") || field.contains("부회장")
+                || field.contains("감사") || field.contains("총무");
+    }
+
+    /** 학생회/단체명 등 조직 정보 필드인지 판별. 그룹 이름으로 채운다. */
+    private static boolean isOrgField(String field) {
+        return field.contains("학생회") || field.contains("단체명") || field.contains("기관명")
+                || field.contains("소속기관") || field.contains("학과명") || field.contains("단체");
     }
 
     /**
@@ -623,8 +657,31 @@ public class EvidenceService {
         if (field.contains("소속")) return group.getPayerAffiliation();
         if (field.contains("학번") || field.contains("사번")) return group.getPayerStudentId();
         if (field.contains("전화") || field.contains("연락")) return group.getPayerPhone();
-        // 세부 항목 키워드 없이 단독으로 오는 필드(예: "지출자", "검토자")는 이름으로 채운다.
         return group.getPayerName();
+    }
+
+    /** 역할 기반 인적 필드를 그룹 멤버 역할(roleName)로 조회해 반환한다. */
+    private String resolveRolePersonField(String field, UserGroup group) {
+        if (group == null) return null;
+        // 검토자 → 가장 높은 결재 순위(approvalOrder) 멤버의 이름
+        if (field.contains("검토자")) {
+            return groupMemberRepository.findByGroup(group).stream()
+                    .filter(m -> m.getRole() != null)
+                    .max(Comparator.comparingInt(m -> m.getRole().getApprovalOrder()))
+                    .map(m -> m.getUser().getName())
+                    .orElse(null);
+        }
+        // 회장/부회장/감사/총무 → roleName에 해당 키워드가 포함된 멤버의 이름
+        for (String keyword : List.of("회장", "부회장", "감사", "총무")) {
+            if (field.contains(keyword)) {
+                return groupMemberRepository.findByGroup(group).stream()
+                        .filter(m -> m.getRole() != null && m.getRole().getRoleName().contains(keyword))
+                        .findFirst()
+                        .map(m -> m.getUser().getName())
+                        .orElse(null);
+            }
+        }
+        return null;
     }
 
     private String buildFormListDescription(List<Form> forms) {
