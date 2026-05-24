@@ -200,7 +200,7 @@ public class FormFillService {
                     if (i + 1 < cells.size()) {
                         XWPFTableCell next = cells.get(i + 1);
                         if (next.getText().trim().isEmpty() && !usedCells.contains(next)) {
-                            if (addPictureToCell(next, fieldName, imageBytes, docxPicType, true)) {
+                            if (addPictureToCell(next, fieldName, imageBytes, docxPicType)) {
                                 usedCells.add(next);
                                 return true;
                             }
@@ -221,7 +221,7 @@ public class FormFillService {
                     String cellText = normalize(cellTextRaw);
                     if (!cellText.contains(normalizedField) && !normalizedField.contains(cellText)) continue;
 
-                    if (addPictureToCell(cell, fieldName, imageBytes, docxPicType, false)) {
+                    if (addPictureToCell(cell, fieldName, imageBytes, docxPicType)) {
                         usedCells.add(cell);
                         return true;
                     }
@@ -242,7 +242,7 @@ public class FormFillService {
                         String cellText = normalize(cellTextRaw);
                         if (!cellText.contains("부착") && !cellText.contains("사진") && !cellText.contains("이미지")) continue;
 
-                        if (addPictureToCell(cell, fieldName, imageBytes, docxPicType, false)) {
+                        if (addPictureToCell(cell, fieldName, imageBytes, docxPicType)) {
                             usedCells.add(cell);
                             return true;
                         }
@@ -259,26 +259,51 @@ public class FormFillService {
     }
 
     private boolean addPictureToCell(XWPFTableCell cell, String fieldName, byte[] imageBytes,
-                                      int docxPicType, boolean reuseFirstParagraph) {
+                                      int docxPicType) {
         try {
-            XWPFParagraph para;
-            if (reuseFirstParagraph) {
-                para = cell.getParagraphs().isEmpty() ? cell.addParagraph() : cell.getParagraphs().get(0);
-            } else {
-                // 레이블 텍스트 유지하고 새 단락에 이미지 추가
-                para = cell.addParagraph();
-            }
+            // 매칭 방식과 무관하게 셀의 기존 텍스트(레이블 등)를 제거한 뒤 이미지를 넣는다. (#5)
+            clearCellContent(cell);
+            XWPFParagraph para = cell.getParagraphs().isEmpty() ? cell.addParagraph() : cell.getParagraphs().get(0);
+            para.setAlignment(ParagraphAlignment.CENTER);
             XWPFRun run = para.createRun();
+            int[] dims = fitDimensionsEmu(imageBytes, 150, 190); // 원본 비율 유지하여 박스 안에 맞춤 (#5)
             try (ByteArrayInputStream imgStream = new ByteArrayInputStream(imageBytes)) {
-                run.addPicture(imgStream, docxPicType, fieldName,
-                        Units.toEMU(150), Units.toEMU(190));
+                run.addPicture(imgStream, docxPicType, fieldName, dims[0], dims[1]);
             }
-            log.info("DOCX 이미지 삽입 완료: {} ({} bytes)", fieldName, imageBytes.length);
+            log.info("DOCX 이미지 삽입 완료: {} ({} bytes, {}x{} EMU)", fieldName, imageBytes.length, dims[0], dims[1]);
             return true;
         } catch (InvalidFormatException | IOException e) {
             log.warn("DOCX 이미지 삽입 실패: {} - {}", fieldName, e.getMessage());
             return false;
         }
+    }
+
+    /** 셀의 모든 단락에서 run(텍스트)을 제거한다. 단락 구조는 유지하고 첫 단락을 이미지용으로 재사용한다. (#5) */
+    private void clearCellContent(XWPFTableCell cell) {
+        for (XWPFParagraph para : cell.getParagraphs()) {
+            for (int i = para.getRuns().size() - 1; i >= 0; i--) {
+                para.removeRun(i);
+            }
+        }
+    }
+
+    /**
+     * 이미지 원본 비율을 유지하면서 maxWpx×maxHpx 박스 안에 맞는 크기(EMU)를 계산한다.
+     * scale = min(maxW/원본W, maxH/원본H). 디코딩 실패 시 박스 크기를 그대로 사용한다. (#5)
+     */
+    int[] fitDimensionsEmu(byte[] imageBytes, int maxWpx, int maxHpx) {
+        try (ByteArrayInputStream bis = new ByteArrayInputStream(imageBytes)) {
+            BufferedImage img = ImageIO.read(bis);
+            if (img != null && img.getWidth() > 0 && img.getHeight() > 0) {
+                double scale = Math.min((double) maxWpx / img.getWidth(), (double) maxHpx / img.getHeight());
+                int w = Math.max(1, (int) Math.round(img.getWidth() * scale));
+                int h = Math.max(1, (int) Math.round(img.getHeight() * scale));
+                return new int[]{Units.toEMU(w), Units.toEMU(h)};
+            }
+        } catch (IOException e) {
+            log.warn("이미지 크기 계산 실패, 기본 박스 크기 사용 - {}", e.getMessage());
+        }
+        return new int[]{Units.toEMU(maxWpx), Units.toEMU(maxHpx)};
     }
 
     private void replacePlaceholders(XWPFParagraph paragraph, Map<String, String> allFields) {
@@ -347,8 +372,10 @@ public class FormFillService {
     // 셀의 모든 단락·run을 비우고 첫 run에만 값을 씀 (여러 단락으로 된 레이블 셀 교체용)
     private void clearCellText(XWPFTableCell cell, String value) {
         enableWordWrap(cell);
+        cell.setVerticalAlignment(XWPFTableCell.XWPFVertAlign.CENTER); // 값 수직 가운데 (#6)
         boolean valueSet = false;
         for (XWPFParagraph para : cell.getParagraphs()) {
+            para.setAlignment(ParagraphAlignment.CENTER); // 값 수평 가운데 (#6)
             for (int j = 0; j < para.getRuns().size(); j++) {
                 if (!valueSet) {
                     para.getRuns().get(j).setText(value, 0);
@@ -359,26 +386,29 @@ public class FormFillService {
             }
         }
         if (!valueSet) {
-            if (cell.getParagraphs().isEmpty()) {
-                cell.addParagraph().createRun().setText(value);
-            } else {
-                cell.getParagraphs().get(0).createRun().setText(value);
-            }
+            XWPFParagraph para = cell.getParagraphs().isEmpty()
+                    ? cell.addParagraph() : cell.getParagraphs().get(0);
+            para.setAlignment(ParagraphAlignment.CENTER);
+            para.createRun().setText(value);
         }
     }
 
     private void setCellText(XWPFTableCell cell, String value) {
         enableWordWrap(cell);
+        cell.setVerticalAlignment(XWPFTableCell.XWPFVertAlign.CENTER); // 값 수직 가운데 (#6)
+        XWPFParagraph para;
         if (cell.getParagraphs().isEmpty()) {
-            cell.addParagraph().createRun().setText(value);
+            para = cell.addParagraph();
+            para.createRun().setText(value);
         } else {
-            XWPFParagraph para = cell.getParagraphs().get(0);
+            para = cell.getParagraphs().get(0);
             if (para.getRuns().isEmpty()) {
                 para.createRun().setText(value);
             } else {
                 para.getRuns().get(0).setText(value, 0);
             }
         }
+        para.setAlignment(ParagraphAlignment.CENTER); // 값 수평 가운데 (#6)
     }
 
     private void enableWordWrap(XWPFTableCell cell) {
@@ -402,6 +432,120 @@ public class FormFillService {
      */
     private static final int MULTIROW_MIN_PARTS = 3;
     private static final int MULTIROW_MAX_TOKEN_LEN = 30;
+
+    /**
+     * startRow부터 아래로 스캔해 '합계/소계/총계/총액' 라벨이 있는 행 번호를 찾는다. 없으면 -1.
+     * 다중행 데이터를 이 행 위까지만 채우기 위한 경계로 사용한다.
+     */
+    private int findSumRowIndex(Sheet sheet, int startRow) {
+        int last = sheet.getLastRowNum();
+        for (int r = startRow; r <= last; r++) {
+            Row row = sheet.getRow(r);
+            if (row == null) continue;
+            for (int c = 0; c < row.getLastCellNum(); c++) {
+                Cell cell = row.getCell(c);
+                if (cell == null || cell.getCellType() != CellType.STRING) continue;
+                String t = cell.getStringCellValue().replace(" ", "");
+                if (t.contains("합계") || t.contains("소계") || t.contains("총계") || t.contains("총액")) {
+                    return r;
+                }
+            }
+        }
+        return -1;
+    }
+
+    /** 단일 값 채우기: 오른쪽 빈 셀 우선, 없으면 아래 빈 셀. (#6 가운데 정렬) */
+    private void fillSingleValue(Workbook workbook, Sheet sheet, Row row, int ci, String value, Map<Short, CellStyle> cache) {
+        Cell rightCell = row.getCell(ci + 1);
+        if (rightCell == null || rightCell.getCellType() == CellType.BLANK) {
+            if (rightCell == null) rightCell = row.createCell(ci + 1);
+            rightCell.setCellValue(value);
+            applyCenter(workbook, rightCell, cache);
+        } else {
+            Row nextRow = sheet.getRow(row.getRowNum() + 1);
+            if (nextRow == null) nextRow = sheet.createRow(row.getRowNum() + 1);
+            Cell belowCell = nextRow.getCell(ci);
+            if (belowCell == null || belowCell.getCellType() == CellType.BLANK) {
+                if (belowCell == null) belowCell = nextRow.createCell(ci);
+                belowCell.setCellValue(value);
+                applyCenter(workbook, belowCell, cache);
+            }
+        }
+    }
+
+    /** 다중행(표) 채우기 1건: 어느 시트의 어느 헤더 행/열에 어떤 값 리스트를 펼칠지. */
+    private static class MultiRowFill {
+        final int sheetIndex;
+        final int headerRow;
+        final int col;
+        final List<String> values;
+        MultiRowFill(int sheetIndex, int headerRow, int col, List<String> values) {
+            this.sheetIndex = sheetIndex;
+            this.headerRow = headerRow;
+            this.col = col;
+            this.values = values;
+        }
+    }
+
+    /**
+     * 수집한 표 데이터를 채운다. 헤더 행 아래 '합계' 행 위까지만 채우고, 칸을 초과하면
+     * 같은 양식 시트를 복제해 다음 양식지(시트)로 이어 쓴다.
+     * 같은 시트·헤더의 여러 컬럼은 동일한 페이지 경계로 함께 분할된다.
+     */
+    private void applyMultiRowFills(Workbook workbook, List<MultiRowFill> fills, Map<Short, CellStyle> cache) {
+        if (fills.isEmpty()) return;
+        // (시트, 헤더 행)별 그룹 — 한 표의 여러 컬럼을 같은 페이지 경계로 함께 분할
+        Map<String, List<MultiRowFill>> groups = new java.util.LinkedHashMap<>();
+        for (MultiRowFill f : fills) {
+            groups.computeIfAbsent(f.sheetIndex + ":" + f.headerRow, k -> new java.util.ArrayList<>()).add(f);
+        }
+
+        for (List<MultiRowFill> group : groups.values()) {
+            MultiRowFill any = group.get(0);
+            Sheet origSheet = workbook.getSheetAt(any.sheetIndex);
+            int startRow = any.headerRow + 1;
+            int sumRowIdx = findSumRowIndex(origSheet, startRow);
+            int capacity = (sumRowIdx >= 0) ? (sumRowIdx - startRow) : Integer.MAX_VALUE;
+            if (capacity <= 0) {
+                log.warn("XLSX 표 채우기: 합계 행 바로 위에 빈 칸이 없어 건너뜀 (headerRow={})", any.headerRow);
+                continue;
+            }
+
+            int maxTokens = 0;
+            for (MultiRowFill f : group) maxTokens = Math.max(maxTokens, f.values.size());
+            int pages = (capacity == Integer.MAX_VALUE) ? 1 : (int) Math.ceil((double) maxTokens / capacity);
+
+            // 페이지 시트 준비: page0 = 원본, 추가 페이지는 데이터 쓰기 전의 깨끗한 원본 복제본
+            List<Sheet> pageSheets = new java.util.ArrayList<>();
+            pageSheets.add(origSheet);
+            int origIdx = workbook.getSheetIndex(origSheet);
+            for (int p = 1; p < pages; p++) {
+                pageSheets.add(workbook.cloneSheet(origIdx));
+            }
+
+            for (int p = 0; p < pages; p++) {
+                Sheet target = pageSheets.get(p);
+                for (MultiRowFill f : group) {
+                    for (int k = 0; k < capacity; k++) {
+                        int tokenIdx = p * capacity + k;
+                        if (tokenIdx >= f.values.size()) break;
+                        String v = f.values.get(tokenIdx);
+                        if (v.isEmpty()) continue; // 누락 행 보존 → 행 정렬 유지
+                        Row tr = target.getRow(startRow + k);
+                        if (tr == null) tr = target.createRow(startRow + k);
+                        Cell tc = tr.getCell(f.col);
+                        if (tc == null) tc = tr.createCell(f.col);
+                        else if (tc.getCellType() != CellType.BLANK) continue; // 기존 데이터/수식 보존
+                        tc.setCellValue(v);
+                        applyCenter(workbook, tc, cache);
+                    }
+                }
+            }
+            if (pages > 1) {
+                log.info("XLSX 표 데이터가 칸({})을 초과 - 양식 시트를 복제해 {}장으로 이어 작성", capacity, pages);
+            }
+        }
+    }
 
     private java.util.List<String> splitMultiRowValue(String value) {
         if (value == null) return java.util.Collections.emptyList();
@@ -427,9 +571,20 @@ public class FormFillService {
         try (FileInputStream fis = new FileInputStream(filePath);
              Workbook workbook = WorkbookFactory.create(fis)) {
 
-            for (int si = 0; si < workbook.getNumberOfSheets(); si++) {
+            // 채운 셀에 적용할 가운데 정렬 스타일 캐시 (원본 스타일별로 1개만 생성해 스타일 수 폭증 방지) (#6)
+            Map<Short, CellStyle> centerStyleCache = new java.util.HashMap<>();
+
+            // Phase 1: 단일 값은 즉시 채우고, 다중행(표) 데이터는 수집만 한다. (합계 행 처리·시트 분할은 Phase 2)
+            List<MultiRowFill> multiRowFills = new java.util.ArrayList<>();
+            int originalSheetCount = workbook.getNumberOfSheets();
+            for (int si = 0; si < originalSheetCount; si++) {
                 Sheet sheet = workbook.getSheetAt(si);
-                for (Row row : sheet) {
+                // 인덱스 기반 순회: 다중행 채우기로 행을 새로 만들어도 원본 행 범위만 처리하고
+                // 이터레이터 ConcurrentModificationException을 피한다. (합계 등 헤더 아래 행이 있는 양식 대응)
+                int lastRowNum = sheet.getLastRowNum();
+                for (int ri = 0; ri <= lastRowNum; ri++) {
+                    Row row = sheet.getRow(ri);
+                    if (row == null) continue;
                     for (int ci = 0; ci < row.getLastCellNum(); ci++) {
                         Cell cell = row.getCell(ci);
                         if (cell == null || cell.getCellType() != CellType.STRING) continue;
@@ -449,41 +604,19 @@ public class FormFillService {
                                     : splitMultiRowValue(value);
 
                             if (rowValues.size() >= MULTIROW_MIN_PARTS) {
-                                // 표 헤더 아래로 펼침
-                                int startRow = row.getRowNum() + 1;
-                                for (int j = 0; j < rowValues.size(); j++) {
-                                    String v = rowValues.get(j);
-                                    if (v.isEmpty()) continue; // 중간 누락 행은 그대로 비워둠 → 행 정렬 유지
-                                    Row targetRow = sheet.getRow(startRow + j);
-                                    if (targetRow == null) targetRow = sheet.createRow(startRow + j);
-                                    Cell target = targetRow.getCell(ci);
-                                    if (target == null) target = targetRow.createCell(ci);
-                                    else if (target.getCellType() != CellType.BLANK) continue; // 기존 데이터/수식 보존
-                                    target.setCellValue(v);
-                                }
-                                log.debug("XLSX 필드 채우기(다중행, {}개): {}", rowValues.size(), field);
+                                // 표 데이터: 합계 행 처리·시트 분할을 위해 수집만 하고 Phase 2에서 채운다.
+                                multiRowFills.add(new MultiRowFill(si, row.getRowNum(), ci, rowValues));
                             } else {
-                                // 단일 값: 오른쪽 빈 셀 우선, 아니면 아래 빈 셀
-                                Cell rightCell = row.getCell(ci + 1);
-                                if (rightCell == null || rightCell.getCellType() == CellType.BLANK) {
-                                    if (rightCell == null) rightCell = row.createCell(ci + 1);
-                                    rightCell.setCellValue(value);
-                                    log.debug("XLSX 필드 채우기(오른쪽): {} = {}", field, value);
-                                } else {
-                                    Row nextRow = sheet.getRow(row.getRowNum() + 1);
-                                    if (nextRow == null) nextRow = sheet.createRow(row.getRowNum() + 1);
-                                    Cell belowCell = nextRow.getCell(ci);
-                                    if (belowCell == null || belowCell.getCellType() == CellType.BLANK) {
-                                        if (belowCell == null) belowCell = nextRow.createCell(ci);
-                                        belowCell.setCellValue(value);
-                                        log.debug("XLSX 필드 채우기(아래): {} = {}", field, value);
-                                    }
-                                }
+                                fillSingleValue(workbook, sheet, row, ci, value, centerStyleCache);
+                                log.debug("XLSX 필드 채우기(단일): {} = {}", field, value);
                             }
                         }
                     }
                 }
             }
+
+            // Phase 2: 표 데이터를 합계 행 위까지 채우고, 칸을 초과하면 양식 시트를 복제해 다음 양식지로 이어 쓴다.
+            applyMultiRowFills(workbook, multiRowFills, centerStyleCache);
 
             // 이미지 필드 삽입 - 텍스트 채우기 완료 후 별도 단계로 실행
             if (!imageFieldsBytes.isEmpty()) {
@@ -494,6 +627,22 @@ public class FormFillService {
             workbook.write(out);
             return out.toByteArray();
         }
+    }
+
+    /**
+     * 채운 셀에 가운데 정렬을 적용한다. 원본 셀 스타일(테두리·폰트·서식)을 복제한 뒤
+     * 정렬만 변경해 기존 양식 서식을 보존하고, 원본 스타일별로 1개만 만들어 캐시한다. (#6)
+     */
+    private void applyCenter(Workbook workbook, Cell cell, Map<Short, CellStyle> cache) {
+        CellStyle source = cell.getCellStyle();
+        CellStyle centered = cache.computeIfAbsent(source.getIndex(), idx -> {
+            CellStyle s = workbook.createCellStyle();
+            s.cloneStyleFrom(source);
+            s.setAlignment(HorizontalAlignment.CENTER);
+            s.setVerticalAlignment(VerticalAlignment.CENTER);
+            return s;
+        });
+        cell.setCellStyle(centered);
     }
 
     /**
@@ -604,6 +753,7 @@ public class FormFillService {
             Drawing<?> drawing = sheet.createDrawingPatriarch();
             ClientAnchor anchor = helper.createClientAnchor();
             int col1 = anchorToRight ? labelCol + 1 : labelCol;
+            clearXlsxCellText(sheet, labelRow, col1); // 이미지가 덮을 셀의 기존 텍스트 제거 (#5)
             anchor.setCol1(col1);
             anchor.setRow1(labelRow);
             anchor.setCol2(col1 + 2);
@@ -614,6 +764,16 @@ public class FormFillService {
         } catch (Exception e) {
             log.warn("XLSX 이미지 삽입 실패: {} - {}", fieldName, e.getMessage());
             return false;
+        }
+    }
+
+    /** 이미지가 덮을 셀의 문자열 텍스트를 제거한다 (이미지 뒤로 글자가 비치지 않도록). (#5) */
+    private void clearXlsxCellText(Sheet sheet, int rowIdx, int colIdx) {
+        Row row = sheet.getRow(rowIdx);
+        if (row == null) return;
+        Cell cell = row.getCell(colIdx);
+        if (cell != null && cell.getCellType() == CellType.STRING) {
+            cell.setBlank();
         }
     }
 

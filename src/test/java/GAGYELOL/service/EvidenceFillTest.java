@@ -1,5 +1,6 @@
 package GAGYELOL.service;
 
+import GAGYELOL.dto.CompleteFormRequest;
 import GAGYELOL.dto.FillFieldsRequest;
 import GAGYELOL.dto.FillFieldsResponse;
 import GAGYELOL.entity.*;
@@ -20,6 +21,7 @@ import java.util.List;
 import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
 
@@ -302,5 +304,109 @@ class EvidenceFillTest {
         assertThat(result.getFilledFields()).doesNotContainKey("검토자");
         assertThat(result.getFilledFields()).containsEntry("금액", "50000");
         verify(evidenceAiService).fillFormFields(any(), any(), eq(List.of("금액")));
+    }
+
+    @Test
+    void fillFields_사업명필드는_입력받은_사업명으로_채우고_영수증추출_제외() throws Exception {
+        // given — 사용자가 입력한 사업명이 있음
+        Path evidenceFile = tempDir.resolve("evidence7.pdf");
+        Files.write(evidenceFile, "dummy".getBytes());
+
+        Evidence evidence = Evidence.builder()
+                .filePath(evidenceFile.toString())
+                .fileName("evidence7.pdf")
+                .businessName("단국대 캡스톤 프로젝트")
+                .build();
+
+        Form form = Form.builder()
+                .formName("지출결의서")
+                .formFields("[\"사업명\",\"금액\"]")
+                .generatedFields("[]")
+                .build();
+
+        when(evidenceRepository.findById(7L)).thenReturn(Optional.of(evidence));
+        when(formRepository.findById(70L)).thenReturn(Optional.of(form));
+        // 영수증 IE에는 "금액"만 전달되어야 함 (사업명은 입력값으로 이미 채워짐)
+        when(evidenceAiService.fillFormFields(any(), any(), eq(List.of("금액"))))
+                .thenReturn("{\"filled\":{\"금액\":\"50000\"},\"missing\":[]}");
+
+        FillFieldsRequest request = new FillFieldsRequest();
+        ReflectionTestUtils.setField(request, "formIds", List.of(70L));
+
+        // when
+        FillFieldsResponse response = evidenceService.fillFields(7L, request);
+
+        // then — 사업명은 영수증 OCR이 아니라 입력값으로 채워진다
+        FillFieldsResponse.FormFillResult result = response.getResults().get(0);
+        assertThat(result.getFilledFields()).containsEntry("사업명", "단국대 캡스톤 프로젝트");
+        assertThat(result.getFilledFields()).containsEntry("금액", "50000");
+        assertThat(result.getMissingFields()).isEmpty();
+        // 핵심: 사업명 필드는 영수증 IE 호출 대상에서 빠지고 "금액"만 전달됨
+        verify(evidenceAiService).fillFormFields(any(), any(), eq(List.of("금액")));
+    }
+
+    @Test
+    void fillFields_사업명_입력없으면_사업명필드_미입력() throws Exception {
+        // given — 입력 사업명이 없음
+        Path evidenceFile = tempDir.resolve("evidence8.pdf");
+        Files.write(evidenceFile, "dummy".getBytes());
+
+        Evidence evidence = Evidence.builder()
+                .filePath(evidenceFile.toString())
+                .fileName("evidence8.pdf")
+                .businessName(null)
+                .build();
+
+        Form form = Form.builder()
+                .formName("지출결의서")
+                .formFields("[\"사업명\",\"금액\"]")
+                .generatedFields("[]")
+                .build();
+
+        when(evidenceRepository.findById(8L)).thenReturn(Optional.of(evidence));
+        when(formRepository.findById(80L)).thenReturn(Optional.of(form));
+        when(evidenceAiService.fillFormFields(any(), any(), eq(List.of("금액"))))
+                .thenReturn("{\"filled\":{\"금액\":\"50000\"},\"missing\":[]}");
+
+        FillFieldsRequest request = new FillFieldsRequest();
+        ReflectionTestUtils.setField(request, "formIds", List.of(80L));
+
+        // when
+        FillFieldsResponse response = evidenceService.fillFields(8L, request);
+
+        // then — 사업명은 미입력으로 표시되고 영수증 OCR로 추출하지 않음
+        FillFieldsResponse.FormFillResult result = response.getResults().get(0);
+        assertThat(result.getMissingFields()).contains("사업명");
+        assertThat(result.getFilledFields()).doesNotContainKey("사업명");
+        assertThat(result.getFilledFields()).containsEntry("금액", "50000");
+        verify(evidenceAiService).fillFormFields(any(), any(), eq(List.of("금액")));
+    }
+
+    @Test
+    void completeForm_양식파일이_없으면_재업로드_안내_에러() {
+        // given — form.filePath가 존재하지 않는 파일을 가리킴 (재배포로 ephemeral 스토리지가 초기화된 상황)
+        Form form = Form.builder()
+                .formName("지출 기록부")
+                .formFields("[\"금액\"]")
+                .generatedFields("[]")
+                .filePath(tempDir.resolve("사라진양식.docx").toString())
+                .build();
+
+        Evidence evidence = Evidence.builder()
+                .fileName("evidence9.pdf")
+                .build();
+
+        when(evidenceRepository.findById(9L)).thenReturn(Optional.of(evidence));
+        when(formRepository.findById(90L)).thenReturn(Optional.of(form));
+
+        CompleteFormRequest.FormInput input = new CompleteFormRequest.FormInput();
+        ReflectionTestUtils.setField(input, "formId", 90L);
+        CompleteFormRequest request = new CompleteFormRequest();
+        ReflectionTestUtils.setField(request, "forms", List.of(input));
+
+        // when / then — 원본 경로를 노출하는 대신 재업로드를 안내하는 명확한 메시지
+        assertThatThrownBy(() -> evidenceService.completeForm(9L, request))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("다시 업로드");
     }
 }
