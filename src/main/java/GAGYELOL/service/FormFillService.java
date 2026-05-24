@@ -108,10 +108,11 @@ public class FormFillService {
                             if (!matches) continue;
 
                             // 1순위: 오른쪽 인접 빈 셀 채우기 (현금지출증빙서 등)
+                            // OO/00/○○ 플레이스홀더 텍스트가 있는 셀도 빈 값 셀로 취급한다.
                             if (i + 1 < cells.size()) {
                                 XWPFTableCell nextCell = cells.get(i + 1);
                                 String nextText = nextCell.getText().trim();
-                                if (nextText.isEmpty()) {
+                                if (nextText.isEmpty() || isOoPlaceholder(nextText)) {
                                     setCellText(nextCell, value);
                                     log.info("DOCX 필드 채우기 완료: {} = {}", field, value);
                                     break;
@@ -354,6 +355,16 @@ public class FormFillService {
                 .replace("&amp;", "&")
                 .replaceAll("\\s+", " ")
                 .trim();
+    }
+
+    /**
+     * OO/00/oo/○○ 패턴이 포함된 플레이스홀더 셀인지 판별.
+     * 예) "OO대학 OO학과(부) OO전공" → true
+     * 실제 채워진 값 셀("SW융합대학 소프트웨어학과") → false
+     */
+    private static final Pattern OO_PLACEHOLDER = Pattern.compile("OO|oo|○○|00(?=\\D|$)");
+    private static boolean isOoPlaceholder(String text) {
+        return OO_PLACEHOLDER.matcher(text).find();
     }
 
     /**
