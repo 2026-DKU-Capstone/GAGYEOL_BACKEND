@@ -296,6 +296,7 @@ public class EvidenceService {
             //          그룹 등록 지출인 정보(UserGroup.payer*)로만 채운다. 못 채우면 미입력으로 표시한다.
             List<String> remainingAfterPayer = new ArrayList<>();
             UserGroup group = evidence.getGroup();
+            String businessName = evidence.getBusinessName();
             for (String field : formFields) {
                 if (isPersonField(field)) {
                     String personValue = resolvePersonField(field, group);
@@ -306,13 +307,21 @@ public class EvidenceService {
                         missingFields.add(field);
                         log.info("인적 필드 - 등록 정보 없음, 미입력 처리: {}", field);
                     }
+                } else if (isBusinessNameField(field)) {
+                    // 사업명/행사명은 영수증 OCR이 아니라 사용자가 입력한 사업명으로 채운다.
+                    if (businessName != null && !businessName.isBlank()) {
+                        filledFields.put(field, businessName);
+                        log.info("사업명 필드 채우기(입력값): {} = {}", field, businessName);
+                    } else {
+                        missingFields.add(field);
+                        log.info("사업명 필드 - 입력값 없음, 미입력 처리: {}", field);
+                    }
                 } else {
                     remainingAfterPayer.add(field);
                 }
             }
 
             // [경로 1] generatedFields → 사업명 기반 LLM 생성
-            String businessName = evidence.getBusinessName();
             List<String> directFields = new ArrayList<>();
             for (String field : remainingAfterPayer) {
                 if (generatedFieldSet.contains(field)) {
@@ -400,9 +409,9 @@ public class EvidenceService {
             throw new IllegalArgumentException("수령인 이미지가 없습니다.");
         }
         String mimeType = resolveMimeType(recipientImage.getOriginalFilename());
-        if (!mimeType.startsWith("image/")) {
+        if (!mimeType.startsWith("image/") && !mimeType.equals("application/pdf")) {
             throw new IllegalArgumentException(
-                    "수령인 정보는 이미지 파일에서만 추출할 수 있습니다: " + recipientImage.getOriginalFilename());
+                    "수령인 정보는 이미지(JPG/PNG) 또는 PDF 파일에서만 추출할 수 있습니다: " + recipientImage.getOriginalFilename());
         }
         byte[] bytes;
         try {
@@ -470,6 +479,7 @@ public class EvidenceService {
         Set<String> generatedFields = parseGeneratedFields(form);
         log.info("양식지 최종 완성 - formId={}, 필드 수={}, 이미지 수={}, generatedFields={}",
                 form.getId(), allFields.size(), imageBytesMap.size(), generatedFields);
+        ensureFormFileExists(form);
         try {
             return formFillService.fill(form.getFilePath(), allFields, imageBytesMap, generatedFields);
         } catch (IOException e) {
@@ -487,6 +497,7 @@ public class EvidenceService {
                 Map<String, String> allFields = mergeFields(input);
                 Map<String, byte[]> imageBytesMap = resolveImageBytes(evidence, input.getImageFields());
                 Set<String> generatedFields = parseGeneratedFields(form);
+                ensureFormFileExists(form);
                 byte[] fileBytes = formFillService.fill(form.getFilePath(), allFields, imageBytesMap, generatedFields);
 
                 String ext = form.getFilePath().substring(form.getFilePath().lastIndexOf('.'));
@@ -581,6 +592,24 @@ public class EvidenceService {
     /** 지출자/지출인/검토자 인적 필드인지 판별. 이 필드들은 영수증이 아니라 그룹 등록 지출인 정보로만 채운다. */
     private static boolean isPersonField(String field) {
         return field.contains("지출인") || field.contains("지출자") || field.contains("검토자");
+    }
+
+    /** 사업명/행사명 식별 필드인지 판별. 이 필드는 영수증 OCR이 아니라 사용자가 입력한 사업명으로 채운다. */
+    private static boolean isBusinessNameField(String field) {
+        return field.contains("사업명") || field.contains("행사명");
+    }
+
+    /**
+     * 양식지 원본 파일이 서버 디스크에 존재하는지 확인. 없으면 재업로드를 안내하는 명확한 에러를 던진다.
+     * (업로드 디렉토리가 영속 스토리지가 아닌 환경에서 재배포 후 파일이 사라진 경우 발생)
+     */
+    private void ensureFormFileExists(Form form) {
+        if (!Files.exists(Paths.get(form.getFilePath()))) {
+            log.warn("양식지 원본 파일 없음 - formId={}, path={}", form.getId(), form.getFilePath());
+            throw new IllegalArgumentException(
+                    "양식지 원본 파일을 찾을 수 없습니다. 양식지(\"" + form.getFormName()
+                    + "\")를 다시 업로드한 뒤 다시 시도해 주세요.");
+        }
     }
 
     private String resolvePersonField(String field, UserGroup group) {

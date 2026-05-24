@@ -151,6 +151,50 @@ class FormFillServiceXlsxTest {
         }
     }
 
+    /**
+     * 다중행 데이터가 표 칸 수를 초과하면 합계 행을 넘지 않고, 초과분은 양식 시트를 복제한
+     * 다음 시트(다음 양식지)로 이어 기록된다.
+     * 헤더(row0) 아래 데이터 칸은 row1~3 (합계는 row4) = 칸 3개. 값 5개 → 3개는 현재 시트, 2개는 복제 시트.
+     */
+    @Test
+    void 다중행은_합계행_위까지_채우고_초과분은_다음_시트로_복제된다() throws IOException {
+        Path tempFile = tempDir.resolve("form-with-sum.xlsx");
+        try (XSSFWorkbook wb = new XSSFWorkbook()) {
+            Sheet sheet = wb.createSheet("양식");
+            sheet.createRow(0).createCell(0).setCellValue("번호"); // 헤더
+            // row 1~3 = 데이터 칸 (빈 행)
+            sheet.createRow(4).createCell(0).setCellValue("합계"); // 합계 행
+            try (FileOutputStream fos = new FileOutputStream(tempFile.toFile())) {
+                wb.write(fos);
+            }
+        }
+
+        Map<String, String> fields = new LinkedHashMap<>();
+        fields.put("번호", "1, 2, 3, 4, 5"); // 5개지만 데이터 칸은 3개(row1~3)
+
+        byte[] result = service.fill(tempFile.toString(), fields);
+
+        try (XSSFWorkbook out = new XSSFWorkbook(new ByteArrayInputStream(result))) {
+            // 칸을 초과해 두 번째 양식지(복제 시트)가 생겼다
+            assertThat(out.getNumberOfSheets()).isEqualTo(2);
+
+            Sheet page1 = out.getSheetAt(0);
+            assertThat(page1.getRow(1).getCell(0).getStringCellValue()).isEqualTo("1");
+            assertThat(page1.getRow(2).getCell(0).getStringCellValue()).isEqualTo("2");
+            assertThat(page1.getRow(3).getCell(0).getStringCellValue()).isEqualTo("3");
+            // 합계 행(row4)은 덮어쓰지 않고 라벨 유지, 그 아래로 새 행도 만들지 않음
+            assertThat(page1.getRow(4).getCell(0).getStringCellValue()).isEqualTo("합계");
+            assertThat(page1.getRow(5)).isNull();
+
+            // 두 번째 양식지: 헤더·합계 라벨이 복제되고 초과분 4,5가 들어간다
+            Sheet page2 = out.getSheetAt(1);
+            assertThat(page2.getRow(0).getCell(0).getStringCellValue()).isEqualTo("번호");
+            assertThat(page2.getRow(1).getCell(0).getStringCellValue()).isEqualTo("4");
+            assertThat(page2.getRow(2).getCell(0).getStringCellValue()).isEqualTo("5");
+            assertThat(page2.getRow(4).getCell(0).getStringCellValue()).isEqualTo("합계");
+        }
+    }
+
     private Path createXlsxWithGappedHeaders() throws IOException {
         Path tempFile = tempDir.resolve("form-gapped.xlsx");
         try (XSSFWorkbook wb = new XSSFWorkbook()) {
