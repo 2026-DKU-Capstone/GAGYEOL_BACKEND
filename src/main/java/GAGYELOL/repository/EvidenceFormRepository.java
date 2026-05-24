@@ -13,4 +13,6 @@ public interface EvidenceFormRepository extends JpaRepository<EvidenceForm, Evid
     List<Long> findFormIdsByEvidenceId(@Param("evidenceId") Long evidenceId);
 
     void deleteByEvidenceId(Long evidenceId);
+
+    void deleteByFormId(Long formId);
 }

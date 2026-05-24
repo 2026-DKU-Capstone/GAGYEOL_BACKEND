@@ -46,6 +46,8 @@ public class FormService {
     private final ObjectMapper objectMapper;
     private final GAGYELOL.repository.UserGroupRepository groupRepository;
     private final GroupService groupService;
+    private final GAGYELOL.repository.EvidenceFormRepository evidenceFormRepository;
+    private final GAGYELOL.repository.ApprovalRequestRepository approvalRequestRepository;
 
     @Value("${file.upload.form-dir:./uploads/forms}")
     private String uploadDir;
@@ -255,6 +257,10 @@ public class FormService {
         } else {
             groupService.assertMaxRole(user, form.getGroup());
         }
+
+        // FK 참조 정리: evidence_forms 매핑 삭제, approval_requests form 참조 null 처리
+        evidenceFormRepository.deleteByFormId(form.getId());
+        approvalRequestRepository.detachForm(form.getId());
 
         try {
             Files.deleteIfExists(Paths.get(form.getFilePath()));

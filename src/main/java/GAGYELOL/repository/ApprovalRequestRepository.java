@@ -8,6 +8,7 @@ import GAGYELOL.entity.UserGroup;
 import jakarta.persistence.LockModeType;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Lock;
+import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
@@ -35,4 +36,8 @@ public interface ApprovalRequestRepository extends JpaRepository<ApprovalRequest
 
     @Query("SELECT r FROM ApprovalRequest r WHERE r.requester.id = :userId AND r.group.id = :groupId AND r.status = :status")
     List<ApprovalRequest> findByRequesterIdAndGroupIdAndStatus(@Param("userId") Long userId, @Param("groupId") Long groupId, @Param("status") String status);
+
+    @Modifying
+    @Query("UPDATE ApprovalRequest r SET r.form = null WHERE r.form.id = :formId")
+    void detachForm(@Param("formId") Long formId);
 }
