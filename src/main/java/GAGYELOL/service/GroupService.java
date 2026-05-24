@@ -169,6 +169,8 @@ public class GroupService {
         int oldOrder = member.getRole().getApprovalOrder();
         int newOrder = newRole.getApprovalOrder();
         member.updateRole(newRole);
+        memberRepository.save(member); // dirty checking 의존 대신 명시적 저장
+        log.info("역할 변경 저장 - groupId={}, userId={}, role={}", groupId, targetUser.getId(), newRole.getRoleName());
 
         if (oldOrder != newOrder) {
             handleRoleChangeForPendingApprovals(group, targetUser, oldOrder, newOrder);
@@ -257,6 +259,7 @@ public class GroupService {
                                 .userId(m.getUser().getId())
                                 .name(m.getUser().getName())
                                 .email(m.getUser().getEmail())
+                                .roleId(m.getRole().getId())
                                 .roleName(m.getRole().getRoleName())
                                 .approvalOrder(m.getRole().getApprovalOrder())
                                 .build())

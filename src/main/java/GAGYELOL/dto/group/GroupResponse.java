@@ -41,6 +41,7 @@ public class GroupResponse {
         private Long userId;
         private String name;
         private String email;
+        private Long roleId;
         private String roleName;
         private Integer approvalOrder;
     }
