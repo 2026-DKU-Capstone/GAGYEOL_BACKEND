@@ -20,6 +20,8 @@ import java.io.IOException;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 @Service
 @Slf4j
@@ -261,12 +263,11 @@ public class FormFillService {
     private boolean addPictureToCell(XWPFTableCell cell, String fieldName, byte[] imageBytes,
                                       int docxPicType) {
         try {
-            // 매칭 방식과 무관하게 셀의 기존 텍스트(레이블 등)를 제거한 뒤 이미지를 넣는다. (#5)
             clearCellContent(cell);
             XWPFParagraph para = cell.getParagraphs().isEmpty() ? cell.addParagraph() : cell.getParagraphs().get(0);
             para.setAlignment(ParagraphAlignment.CENTER);
             XWPFRun run = para.createRun();
-            int[] dims = fitDimensionsEmu(imageBytes, 150, 190); // 원본 비율 유지하여 박스 안에 맞춤 (#5)
+            int[] dims = getCellDimensionsEmu(cell); // 셀 실제 크기로 꽉 채움
             try (ByteArrayInputStream imgStream = new ByteArrayInputStream(imageBytes)) {
                 run.addPicture(imgStream, docxPicType, fieldName, dims[0], dims[1]);
             }
@@ -276,6 +277,38 @@ public class FormFillService {
             log.warn("DOCX 이미지 삽입 실패: {} - {}", fieldName, e.getMessage());
             return false;
         }
+    }
+
+    private static final Pattern TWIPS_W = Pattern.compile("w:w=\"(\\d+)\"");
+    private static final Pattern TWIPS_H = Pattern.compile("w:val=\"(\\d+)\"");
+
+    /** 셀의 실제 너비·높이를 XML에서 읽어 EMU로 반환. 읽기 실패 시 기본값(150×190px) 사용. */
+    private int[] getCellDimensionsEmu(XWPFTableCell cell) {
+        int w = Units.toEMU(150);
+        int h = Units.toEMU(190);
+        try {
+            CTTcPr tcPr = cell.getCTTc().isSetTcPr() ? cell.getCTTc().getTcPr() : null;
+            if (tcPr != null && tcPr.isSetTcW()) {
+                // <w:tcW w:type="dxa" w:w="1701"/> — twips 단위
+                Matcher m = TWIPS_W.matcher(tcPr.getTcW().xmlText());
+                if (m.find()) {
+                    int twips = Integer.parseInt(m.group(1));
+                    if (twips > 0) w = twips * 635; // 1 twip = 635 EMU
+                }
+            }
+            XWPFTableRow row = cell.getTableRow();
+            if (row != null && row.getCtRow().isSetTrPr()) {
+                // <w:trHeight w:val="851"/> — twips 단위
+                Matcher m = TWIPS_H.matcher(row.getCtRow().getTrPr().xmlText());
+                if (m.find()) {
+                    int twips = Integer.parseInt(m.group(1));
+                    if (twips > 0) h = twips * 635;
+                }
+            }
+        } catch (Exception e) {
+            log.debug("셀 크기 계산 실패, 기본값 사용: {}", e.getMessage());
+        }
+        return new int[]{w, h};
     }
 
     /** 셀의 모든 단락에서 run(텍스트)을 제거한다. 단락 구조는 유지하고 첫 단락을 이미지용으로 재사용한다. (#5) */
@@ -349,6 +382,16 @@ public class FormFillService {
 
         if (normalize(trimmed).equals(normalizedField)) {
             clearCellText(cell, value);
+            return true;
+        }
+
+        // 패턴 4: "[회장       (인)]" 형태 — 콜론 없이 (인)만 있는 경우
+        // 필드명 뒤 공백에 이름을 삽입 → "[회장 값  (인)]"
+        if (trimmed.contains("(인)") && normalize(trimmed).contains(normalizedField)) {
+            int inIdx = trimmed.indexOf("(인)");
+            String beforeIn = trimmed.substring(0, inIdx).stripTrailing();
+            String afterIn = trimmed.substring(inIdx);
+            setCellText(cell, beforeIn + " " + value + "  " + afterIn);
             return true;
         }
 
