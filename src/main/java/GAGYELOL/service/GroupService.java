@@ -242,6 +242,7 @@ public class GroupService {
                 .name(group.getName())
                 .description(group.getDescription())
                 .inviteCode(group.getInviteCode())
+                .ownerId(group.getOwner().getId())
                 .ownerName(group.getOwner().getName())
                 .payerInfo(payerInfo)
                 .roles(roles.stream()

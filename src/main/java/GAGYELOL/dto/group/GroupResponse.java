@@ -12,6 +12,7 @@ public class GroupResponse {
     private String name;
     private String description;
     private String inviteCode;
+    private Long ownerId;
     private String ownerName;
     private List<RoleSummary> roles;
     private List<MemberSummary> members;
