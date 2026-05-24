@@ -616,9 +616,12 @@ public class EvidenceService {
         }
     }
 
-    /** 지출자/지출인 인적 필드인지 판별. 그룹 등록 지출인 정보(payerName 등)로 채운다. */
+    /** 지출자/지출인·소속 인적 필드인지 판별. 그룹 등록 지출인 정보(payerName 등)로 채운다. */
     private static boolean isPersonField(String field) {
-        return field.contains("지출인") || field.contains("지출자");
+        if (field.contains("지출인") || field.contains("지출자")) return true;
+        // "소속기관"은 isOrgField에서 처리, 그 외 "소속"은 지출인 소속으로 처리
+        if (field.contains("소속") && !field.contains("소속기관")) return true;
+        return false;
     }
 
     /** 사업명/행사명 식별 필드인지 판별. 사용자가 입력한 사업명으로 채운다. */
@@ -675,9 +678,11 @@ public class EvidenceService {
                         .orElse(null);
             }
         }
-        // 회장/검토자 등 나머지 → 회장 역할 멤버
+        // 회장/검토자 등 나머지 → 회장 역할 멤버 (부회장 제외)
         return members.stream()
-                .filter(m -> m.getRole() != null && m.getRole().getRoleName().contains("회장"))
+                .filter(m -> m.getRole() != null
+                        && m.getRole().getRoleName().contains("회장")
+                        && !m.getRole().getRoleName().contains("부회장"))
                 .findFirst()
                 .map(m -> m.getUser().getName())
                 .orElse(null);
