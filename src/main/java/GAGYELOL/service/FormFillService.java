@@ -375,6 +375,11 @@ public class FormFillService {
                 || normalizedField.contains("학생증") || normalizedField.contains("영수증");
     }
 
+    /** 양식 칸 이미지 최대 너비(EMU). 셀이 너무 넓어도 이 이상 키우지 않음. */
+    private static final int MAX_IMG_WIDTH_EMU = 16 * 360000;   // 16cm
+    /** 양식 칸 이미지 최대 높이(EMU). A4 1페이지를 넘기지 않도록 제한(행 높이와 무관). */
+    private static final int MAX_IMG_HEIGHT_EMU = 10 * 360000;  // 10cm
+
     private boolean addPictureToCell(XWPFTableCell cell, String fieldName, byte[] imageBytes,
                                       int docxPicType) {
         try {
@@ -383,9 +388,12 @@ public class FormFillService {
             para.setAlignment(ParagraphAlignment.CENTER);
             XWPFRun run = para.createRun();
             int[] box = getCellDimensionsEmu(cell);
-            // 셀 박스 안에 원본 비율을 유지하며 최대한 크게 (테두리에 닿지 않도록 약간의 여백)
-            int boxWpx = Math.max(1, (int) Math.round(box[0] / (double) Units.EMU_PER_PIXEL * 0.95));
-            int boxHpx = Math.max(1, (int) Math.round(box[1] / (double) Units.EMU_PER_PIXEL * 0.95));
+            // 너비는 셀 너비 기준(상한 MAX_IMG_WIDTH). 높이는 행 높이가 불안정하므로(짧은 행이면
+            // 0.9cm로 쪼그라들고, 큰 이미지는 행을 늘려 페이지를 넘김) 행 높이 대신 상한(MAX_IMG_HEIGHT)으로
+            // 제한한다. 박스 안에서 원본 비율을 유지하며 최대 크기로 맞춤.
+            int widthEmu = Math.min(box[0], MAX_IMG_WIDTH_EMU);
+            int boxWpx = Math.max(1, (int) Math.round(widthEmu / (double) Units.EMU_PER_PIXEL * 0.95));
+            int boxHpx = Math.max(1, (int) Math.round(MAX_IMG_HEIGHT_EMU / (double) Units.EMU_PER_PIXEL));
             int[] dims = fitDimensionsEmu(imageBytes, boxWpx, boxHpx);
             try (ByteArrayInputStream imgStream = new ByteArrayInputStream(imageBytes)) {
                 run.addPicture(imgStream, docxPicType, fieldName, dims[0], dims[1]);
