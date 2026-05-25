@@ -639,6 +639,8 @@ public class FormFillService {
      */
     private static final int MULTIROW_MIN_PARTS = 3;
     private static final int MULTIROW_MAX_TOKEN_LEN = 30;
+    /** 표 데이터 시트 복제(페이지) 상한 — cloneSheet 폭주로 인한 OutOfMemoryError 방지. */
+    private static final int MAX_TABLE_PAGES = 30;
 
     /**
      * startRow부터 아래로 스캔해 '합계/소계/총계/총액' 라벨이 있는 행 번호를 찾는다. 없으면 -1.
@@ -699,6 +701,29 @@ public class FormFillService {
      * 같은 양식 시트를 복제해 다음 양식지(시트)로 이어 쓴다.
      * 같은 시트·헤더의 여러 컬럼은 동일한 페이지 경계로 함께 분할된다.
      */
+    /**
+     * 시트의 문자열 셀 내용으로 구조 서명을 만든다. (월별 12개 복제 시트처럼 동일 구조 시트를 식별·중복 제거용)
+     * 빈 셀은 무시하고 위치+값만 사용하며, 길이 상한으로 비대 시트도 빠르게 처리한다.
+     */
+    private String sheetSignature(Sheet sheet) {
+        StringBuilder sb = new StringBuilder();
+        int last = sheet.getLastRowNum();
+        for (int r = 0; r <= last && sb.length() < 4000; r++) {
+            Row row = sheet.getRow(r);
+            if (row == null) continue;
+            short lc = row.getLastCellNum();
+            for (int c = 0; c < lc; c++) {
+                Cell cell = row.getCell(c);
+                if (cell == null || cell.getCellType() != CellType.STRING) continue;
+                String v = cell.getStringCellValue();
+                if (v != null && !v.isBlank()) {
+                    sb.append(r).append(':').append(c).append('=').append(v.trim()).append('|');
+                }
+            }
+        }
+        return sb.toString();
+    }
+
     private void applyMultiRowFills(Workbook workbook, List<MultiRowFill> fills, Map<Short, CellStyle> cache) {
         if (fills.isEmpty()) return;
         // (시트, 헤더 행)별 그룹 — 한 표의 여러 컬럼을 같은 페이지 경계로 함께 분할
@@ -721,6 +746,14 @@ public class FormFillService {
             int maxTokens = 0;
             for (MultiRowFill f : group) maxTokens = Math.max(maxTokens, f.values.size());
             int pages = (capacity == Integer.MAX_VALUE) ? 1 : (int) Math.ceil((double) maxTokens / capacity);
+
+            // 안전장치: 시트 복제 폭주로 인한 OutOfMemoryError 방지.
+            // (합계 행이 헤더 바로 아래라 capacity가 작거나 토큰이 비정상적으로 많을 때 수백 장 복제되는 것을 막음)
+            if (pages > MAX_TABLE_PAGES) {
+                log.warn("XLSX 표 페이지 수가 과도함({}) - {}장으로 제한 (capacity={}, maxTokens={})",
+                        pages, MAX_TABLE_PAGES, capacity, maxTokens);
+                pages = MAX_TABLE_PAGES;
+            }
 
             // 페이지 시트 준비: page0 = 원본, 추가 페이지는 데이터 쓰기 전의 깨끗한 원본 복제본
             List<Sheet> pageSheets = new java.util.ArrayList<>();
@@ -782,10 +815,18 @@ public class FormFillService {
             Map<Short, CellStyle> centerStyleCache = new java.util.HashMap<>();
 
             // Phase 1: 단일 값은 즉시 채우고, 다중행(표) 데이터는 수집만 한다. (합계 행 처리·시트 분할은 Phase 2)
+            // 같은 구조가 반복되는 시트(예: 월별 12개 복제 시트)는 첫 시트에만 채운다.
+            // — 같은 데이터를 모든 시트에 중복으로 넣지 않고, 거대한 시트를 12배 cloneSheet 하다 OOM 나는 것을 막는다.
             List<MultiRowFill> multiRowFills = new java.util.ArrayList<>();
             int originalSheetCount = workbook.getNumberOfSheets();
+            java.util.Set<String> seenSheetSig = new java.util.HashSet<>();
             for (int si = 0; si < originalSheetCount; si++) {
                 Sheet sheet = workbook.getSheetAt(si);
+                String sig = sheetSignature(sheet);
+                if (!sig.isEmpty() && !seenSheetSig.add(sig)) {
+                    log.info("XLSX 동일 구조 중복 시트 건너뜀(첫 시트에만 채움): sheetIndex={}", si);
+                    continue;
+                }
                 // 인덱스 기반 순회: 다중행 채우기로 행을 새로 만들어도 원본 행 범위만 처리하고
                 // 이터레이터 ConcurrentModificationException을 피한다. (합계 등 헤더 아래 행이 있는 양식 대응)
                 int lastRowNum = sheet.getLastRowNum();
