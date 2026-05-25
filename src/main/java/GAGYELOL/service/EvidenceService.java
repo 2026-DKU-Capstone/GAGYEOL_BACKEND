@@ -298,10 +298,14 @@ public class EvidenceService {
             // [경로 0] 인적 필드(지출자/지출인/검토자)는 영수증에서 추출하지 않고
             //          그룹 등록 지출인 정보(UserGroup.payer*)로만 채운다. 못 채우면 미입력으로 표시한다.
             List<String> remainingAfterPayer = new ArrayList<>();
+            List<String> recipientFields = new ArrayList<>(); // 수령인 필드: 증빙 OCR 금지, 학생증에서만
             UserGroup group = evidence.getGroup();
             String businessName = evidence.getBusinessName();
             for (String field : formFields) {
-                if (isPersonField(field)) {
+                if (isRecipientField(field)) {
+                    // 수령인 필드는 영수증/증빙 OCR로 추출하지 않는다. (학생증에서만 채움)
+                    recipientFields.add(field);
+                } else if (isPersonField(field)) {
                     String personValue = resolvePersonField(field, group);
                     if (personValue != null && !personValue.isBlank()) {
                         filledFields.put(field, personValue);
@@ -340,6 +344,30 @@ public class EvidenceService {
                     }
                 } else {
                     remainingAfterPayer.add(field);
+                }
+            }
+
+            // [경로 0.5] 수령인 필드: 증빙(영수증) OCR 금지. 수령인 사진(학생증)이 있으면 거기서만 추출하고,
+            //           없으면 미입력으로 남겨 프론트(doc-review)에서 학생증 업로드로 수집하게 한다.
+            if (!recipientFields.isEmpty()) {
+                String recipientImagePath = evidence.getRecipientImagePath();
+                boolean extracted = false;
+                if (recipientImagePath != null) {
+                    try {
+                        byte[] recipientBytes = Files.readAllBytes(Paths.get(recipientImagePath));
+                        String recipientMimeType = resolveMimeType(Paths.get(recipientImagePath).getFileName().toString());
+                        String recipientResult = evidenceAiService.fillFormFields(recipientBytes, recipientMimeType, recipientFields);
+                        log.info("수령인 필드 학생증 IE 결과 (formId={}): {}", formId, recipientResult);
+                        JsonNode rNode = objectMapper.readTree(recipientResult);
+                        rNode.path("filled").fields().forEachRemaining(en -> filledFields.put(en.getKey(), en.getValue().asText()));
+                        rNode.path("missing").forEach(n -> missingFields.add(n.asText()));
+                        extracted = true;
+                    } catch (Exception e) {
+                        log.warn("수령인 필드 학생증 추출 실패 (formId={}): {}", formId, e.getMessage());
+                    }
+                }
+                if (!extracted) {
+                    missingFields.addAll(recipientFields);
                 }
             }
 
@@ -503,6 +531,7 @@ public class EvidenceService {
                 .orElseThrow(() -> new IllegalArgumentException("양식지를 찾을 수 없습니다: " + input.getFormId()));
         Map<String, String> allFields = mergeFields(input);
         applyGroupOrgTitle(allFields, evidence);
+        applySignatureAndDate(allFields, evidence);
         Map<String, byte[]> imageBytesMap = resolveImageBytes(evidence, input.getImageFields());
         Set<String> generatedFields = parseGeneratedFields(form);
         log.info("양식지 최종 완성 - formId={}, 필드 수={}, 이미지 수={}, generatedFields={}",
@@ -524,6 +553,7 @@ public class EvidenceService {
                         .orElseThrow(() -> new IllegalArgumentException("양식지를 찾을 수 없습니다: " + input.getFormId()));
                 Map<String, String> allFields = mergeFields(input);
                 applyGroupOrgTitle(allFields, evidence);
+                applySignatureAndDate(allFields, evidence);
                 Map<String, byte[]> imageBytesMap = resolveImageBytes(evidence, input.getImageFields());
                 Set<String> generatedFields = parseGeneratedFields(form);
                 ensureFormFileExists(form);
@@ -611,6 +641,37 @@ public class EvidenceService {
         allFields.put(FormFillService.ORG_TITLE_KEY, orgTitle);
     }
 
+    /**
+     * 오늘 날짜("0000년 00월 00일")와 지출인/수령인 서명("지출인/수령인 : (인)") 자리표시자 교체용
+     * 값을 예약 키에 담는다. (FormFillService가 처리)
+     * - 지출인 = 그룹 등록 지출인 이름, 수령인 = 양식의 수령인 성명(학생증에서 채워진 값)
+     */
+    private void applySignatureAndDate(Map<String, String> allFields, Evidence evidence) {
+        String recipientName = findRecipientName(allFields);
+        allFields.put(FormFillService.TODAY_DATE_KEY,
+                java.time.LocalDate.now().format(java.time.format.DateTimeFormatter.ofPattern("yyyy년 MM월 dd일")));
+        UserGroup group = evidence.getGroup();
+        if (group != null && group.getPayerName() != null && !group.getPayerName().isBlank()) {
+            allFields.put(FormFillService.PAYER_SIGN_KEY, group.getPayerName().trim());
+        }
+        if (recipientName != null && !recipientName.isBlank()) {
+            allFields.put(FormFillService.RECIPIENT_SIGN_KEY, recipientName.trim());
+        }
+    }
+
+    /** allFields에서 수령인 성명/이름 값을 찾는다(학생증에서 채워진 값). */
+    private String findRecipientName(Map<String, String> allFields) {
+        for (Map.Entry<String, String> e : allFields.entrySet()) {
+            String k = e.getKey();
+            if ((k.contains("수령인") || k.contains("수령자"))
+                    && (k.contains("성명") || k.contains("이름"))
+                    && e.getValue() != null && !e.getValue().isBlank()) {
+                return e.getValue();
+            }
+        }
+        return null;
+    }
+
     private String normalizeDateValue(String value) {
         if (value == null || value.isBlank()) return value;
         Pattern full = Pattern.compile("(\\d{4})[-/.](\\d{1,2})[-/.](\\d{1,2})");
@@ -642,6 +703,11 @@ public class EvidenceService {
             log.warn("Form {}의 generatedFields 파싱 실패, 빈 set으로 진행: {}", form.getId(), e.getMessage());
             return Collections.emptySet();
         }
+    }
+
+    /** 수령인/수령자 필드인지 판별. 증빙(영수증) OCR이 아니라 학생증에서만 채운다. (다른 분기보다 먼저 검사) */
+    private static boolean isRecipientField(String field) {
+        return field.contains("수령인") || field.contains("수령자");
     }
 
     /** 지출자/지출인·소속 인적 필드인지 판별. 그룹 등록 지출인 정보(payerName 등)로 채운다. */
