@@ -29,10 +29,29 @@ public class FormFillService {
 
     /** EvidenceService가 그룹 정보로 구성한 단체명(예: "단국대학 소프트웨어학과 학생회"). 양식의 "00대학 …학생회" 자리표시자 교체용 예약 키. */
     public static final String ORG_TITLE_KEY = "__ORG_TITLE__";
+    /** 오늘 날짜(예: "2026년 05월 26일"). 양식의 "0000년 00월 00일" 자리표시자 교체용 예약 키. */
+    public static final String TODAY_DATE_KEY = "__TODAY_DATE__";
+    /** 지출인 서명란("지출인 : (인)")에 채울 이름(그룹 등록 지출인). */
+    public static final String PAYER_SIGN_KEY = "__PAYER_SIGN__";
+    /** 수령인 서명란("수령인 : (인)")에 채울 이름(학생증에서 추출한 수령인). */
+    public static final String RECIPIENT_SIGN_KEY = "__RECIPIENT_SIGN__";
+
+    /** fill()에서 일반 필드 루프 전에 분리해 별도 패스로 처리하는 예약 키 목록. */
+    private static final List<String> RESERVED_KEYS =
+            List.of(ORG_TITLE_KEY, TODAY_DATE_KEY, PAYER_SIGN_KEY, RECIPIENT_SIGN_KEY);
 
     /** 양식에 박혀 있는 단체명 자리표시자: "00대학 00학과(부) 00전공 학생회" 류(00/OO/○○ 등 허용)를 통째로 매칭. */
     private static final java.util.regex.Pattern ORG_PLACEHOLDER =
             java.util.regex.Pattern.compile("[0０OoＯｏ○◯]{2,}\\s*대학[\\s\\S]*?학생회");
+    /** 날짜 자리표시자: "0000년 00월 00일" 류(0/０/○ 등 허용). */
+    private static final java.util.regex.Pattern DATE_PLACEHOLDER =
+            java.util.regex.Pattern.compile("[0０○◯]{2,4}\\s*년\\s*[0０○◯]{1,2}\\s*월\\s*[0０○◯]{1,2}\\s*일");
+    /** "지출인 : (인)" 서명란. */
+    private static final java.util.regex.Pattern SIGN_PAYER =
+            java.util.regex.Pattern.compile("지출인\\s*[:：]\\s*\\(\\s*인\\s*\\)");
+    /** "수령인 : (인)" 서명란. */
+    private static final java.util.regex.Pattern SIGN_RECIPIENT =
+            java.util.regex.Pattern.compile("수령인\\s*[:：]\\s*\\(\\s*인\\s*\\)");
 
     /**
      * 파일 확장자에 따라 DOCX 또는 XLSX 채우기를 호출합니다.
@@ -61,18 +80,23 @@ public class FormFillService {
         if (generatedFields == null) {
             generatedFields = Collections.emptySet();
         }
-        // 그룹 단체명 자리표시자 교체용 값은 예약 키로 전달됨 — 일반 필드 루프에서 제외하고 별도 패스로 처리
-        String orgTitle = allFields.get(ORG_TITLE_KEY);
-        if (orgTitle != null) {
+        // 자리표시자(단체명/오늘날짜/지출인·수령인 서명) 교체용 값은 예약 키로 전달됨
+        // — 일반 필드 루프에서 제외하고 별도 패스로 처리
+        Map<String, String> reserved = new java.util.LinkedHashMap<>();
+        for (String key : RESERVED_KEYS) {
+            String v = allFields.get(key);
+            if (v != null) reserved.put(key, v);
+        }
+        if (!reserved.isEmpty()) {
             allFields = new java.util.LinkedHashMap<>(allFields);
-            allFields.remove(ORG_TITLE_KEY);
+            allFields.keySet().removeAll(reserved.keySet());
         }
 
         String lower = filePath.toLowerCase();
         if (lower.endsWith(".docx")) {
-            return fillDocx(filePath, allFields, imageFieldsBytes, orgTitle);
+            return fillDocx(filePath, allFields, imageFieldsBytes, reserved);
         } else if (lower.endsWith(".xlsx") || lower.endsWith(".xls")) {
-            return fillXlsx(filePath, allFields, imageFieldsBytes, generatedFields, orgTitle);
+            return fillXlsx(filePath, allFields, imageFieldsBytes, generatedFields, reserved);
         } else {
             throw new IllegalArgumentException("지원하지 않는 양식 파일 형식: " + filePath);
         }
@@ -82,7 +106,7 @@ public class FormFillService {
      * DOCX 파일의 테이블 셀과 단락에서 필드명을 탐색하여 인접 빈 셀/다음 줄에 값을 채웁니다.
      */
     private byte[] fillDocx(String filePath, Map<String, String> allFields, Map<String, byte[]> imageFieldsBytes,
-                            String orgTitle) throws IOException {
+                            Map<String, String> reserved) throws IOException {
         try (FileInputStream fis = new FileInputStream(filePath);
              XWPFDocument doc = new XWPFDocument(fis)) {
 
@@ -168,10 +192,8 @@ public class FormFillService {
                 insertDocxImages(doc, imageFieldsBytes);
             }
 
-            // 그룹 단체명 자리표시자("00대학 …학생회") 교체
-            if (orgTitle != null && !orgTitle.isBlank()) {
-                replaceOrgTitle(doc, orgTitle);
-            }
+            // 자리표시자 교체: 단체명("00대학 …학생회") · 오늘 날짜("0000년 00월 00일") · 지출인/수령인 서명
+            applyTemplateReplacements(doc, reserved);
 
             ByteArrayOutputStream out = new ByteArrayOutputStream();
             doc.write(out);
@@ -179,36 +201,37 @@ public class FormFillService {
         }
     }
 
-    /** DOCX 전체(상위 단락·표 셀 단락)에서 단체명 자리표시자를 실제 단체명으로 교체. */
-    private void replaceOrgTitle(XWPFDocument doc, String orgTitle) {
-        for (XWPFParagraph p : doc.getParagraphs()) replaceOrgTitleInParagraph(p, orgTitle);
+    /** DOCX 전체(상위 단락·표 셀 단락)에서 예약 키 자리표시자(단체명/날짜/서명)를 교체. */
+    private void applyTemplateReplacements(XWPFDocument doc, Map<String, String> reserved) {
+        if (reserved == null || reserved.isEmpty()) return;
+        for (XWPFParagraph p : doc.getParagraphs()) replaceTemplatesInParagraph(p, reserved);
         for (XWPFTable t : doc.getTables()) {
             for (XWPFTableRow r : t.getRows()) {
                 for (XWPFTableCell c : r.getTableCells()) {
-                    for (XWPFParagraph p : c.getParagraphs()) replaceOrgTitleInParagraph(p, orgTitle);
+                    for (XWPFParagraph p : c.getParagraphs()) replaceTemplatesInParagraph(p, reserved);
                 }
             }
         }
     }
 
-    private void replaceOrgTitleInParagraph(XWPFParagraph para, String orgTitle) {
+    private void replaceTemplatesInParagraph(XWPFParagraph para, Map<String, String> reserved) {
         String text = para.getText();
         if (text == null || text.isEmpty()) return;
-        java.util.regex.Matcher m = ORG_PLACEHOLDER.matcher(text);
-        if (!m.find()) return;
-        String replaced = m.replaceAll(java.util.regex.Matcher.quoteReplacement(orgTitle));
-        // placeholder가 여러 run에 걸쳐 있을 수 있으므로 첫 run에 결과를 모으고 나머지는 제거
+        String replaced = applyTemplateText(text, reserved);
+        if (replaced.equals(text)) return;
+        // 자리표시자가 여러 run에 걸쳐 있을 수 있으므로 첫 run에 결과를 모으고 나머지는 제거
         for (int i = para.getRuns().size() - 1; i > 0; i--) para.removeRun(i);
         if (para.getRuns().isEmpty()) {
             para.createRun().setText(replaced);
         } else {
             para.getRuns().get(0).setText(replaced, 0);
         }
-        log.info("DOCX 단체명 자리표시자 교체 → {}", orgTitle);
+        log.info("DOCX 자리표시자 교체 → {}", replaced);
     }
 
-    /** XLSX/XLS 전체 시트의 문자열 셀에서 단체명 자리표시자를 교체. */
-    private void replaceOrgTitle(Workbook workbook, String orgTitle) {
+    /** XLSX/XLS 전체 시트의 문자열 셀에서 예약 키 자리표시자를 교체. */
+    private void applyTemplateReplacements(Workbook workbook, Map<String, String> reserved) {
+        if (reserved == null || reserved.isEmpty()) return;
         for (int si = 0; si < workbook.getNumberOfSheets(); si++) {
             Sheet sheet = workbook.getSheetAt(si);
             for (Row row : sheet) {
@@ -219,14 +242,35 @@ public class FormFillService {
                     if (cell == null || cell.getCellType() != CellType.STRING) continue;
                     String v = cell.getStringCellValue();
                     if (v == null || v.isEmpty()) continue;
-                    java.util.regex.Matcher m = ORG_PLACEHOLDER.matcher(v);
-                    if (m.find()) {
-                        cell.setCellValue(m.replaceAll(java.util.regex.Matcher.quoteReplacement(orgTitle)));
-                        log.info("XLSX 단체명 자리표시자 교체 → {}", orgTitle);
+                    String replaced = applyTemplateText(v, reserved);
+                    if (!replaced.equals(v)) {
+                        cell.setCellValue(replaced);
+                        log.info("XLSX 자리표시자 교체 → {}", replaced);
                     }
                 }
             }
         }
+    }
+
+    /** 예약 키 값으로 자리표시자(단체명/오늘날짜/지출인·수령인 서명)를 텍스트에서 교체. */
+    private String applyTemplateText(String text, Map<String, String> reserved) {
+        String orgTitle = reserved.get(ORG_TITLE_KEY);
+        if (orgTitle != null && !orgTitle.isBlank()) {
+            text = ORG_PLACEHOLDER.matcher(text).replaceAll(java.util.regex.Matcher.quoteReplacement(orgTitle));
+        }
+        String date = reserved.get(TODAY_DATE_KEY);
+        if (date != null && !date.isBlank()) {
+            text = DATE_PLACEHOLDER.matcher(text).replaceAll(java.util.regex.Matcher.quoteReplacement(date));
+        }
+        String payer = reserved.get(PAYER_SIGN_KEY);
+        if (payer != null && !payer.isBlank()) {
+            text = SIGN_PAYER.matcher(text).replaceAll(java.util.regex.Matcher.quoteReplacement("지출인 : " + payer + " (인)"));
+        }
+        String recipient = reserved.get(RECIPIENT_SIGN_KEY);
+        if (recipient != null && !recipient.isBlank()) {
+            text = SIGN_RECIPIENT.matcher(text).replaceAll(java.util.regex.Matcher.quoteReplacement("수령인 : " + recipient + " (인)"));
+        }
+        return text;
     }
 
     /**
@@ -730,7 +774,7 @@ public class FormFillService {
     }
 
     private byte[] fillXlsx(String filePath, Map<String, String> allFields, Map<String, byte[]> imageFieldsBytes,
-                             java.util.Set<String> generatedFields, String orgTitle) throws IOException {
+                             java.util.Set<String> generatedFields, Map<String, String> reserved) throws IOException {
         try (FileInputStream fis = new FileInputStream(filePath);
              Workbook workbook = WorkbookFactory.create(fis)) {
 
@@ -781,10 +825,8 @@ public class FormFillService {
             // Phase 2: 표 데이터를 합계 행 위까지 채우고, 칸을 초과하면 양식 시트를 복제해 다음 양식지로 이어 쓴다.
             applyMultiRowFills(workbook, multiRowFills, centerStyleCache);
 
-            // 그룹 단체명 자리표시자("00대학 …학생회") 교체 (복제된 페이지의 머리글도 함께 교체됨)
-            if (orgTitle != null && !orgTitle.isBlank()) {
-                replaceOrgTitle(workbook, orgTitle);
-            }
+            // 자리표시자 교체: 단체명·오늘 날짜·지출인/수령인 서명 (복제된 페이지의 머리글도 함께 교체됨)
+            applyTemplateReplacements(workbook, reserved);
 
             // 이미지 필드 삽입 - 텍스트 채우기 완료 후 별도 단계로 실행
             if (!imageFieldsBytes.isEmpty()) {
