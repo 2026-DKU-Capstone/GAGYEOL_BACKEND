@@ -84,6 +84,32 @@ class FormFillServiceFormatTest {
         }
     }
 
+    // ---- 단체명 자리표시자 교체 ----
+
+    @Test
+    void DOCX_단체명_자리표시자가_그룹단체명으로_교체된다() throws IOException {
+        Path tempFile = tempDir.resolve("org-title.docx");
+        try (XWPFDocument doc = new XWPFDocument()) {
+            XWPFParagraph p = doc.createParagraph();
+            p.createRun().setText("00대학 00학과(부) 00전공 학생회");
+            try (FileOutputStream fos = new FileOutputStream(tempFile.toFile())) {
+                doc.write(fos);
+            }
+        }
+
+        Map<String, String> fields = new LinkedHashMap<>();
+        fields.put(FormFillService.ORG_TITLE_KEY, "단국대학 소프트웨어학과 학생회");
+
+        byte[] result = service.fill(tempFile.toString(), fields);
+
+        try (XWPFDocument doc = new XWPFDocument(new ByteArrayInputStream(result))) {
+            String joined = doc.getParagraphs().stream()
+                    .map(XWPFParagraph::getText).reduce("", (a, b) -> a + b);
+            assertThat(joined).contains("단국대학 소프트웨어학과 학생회");
+            assertThat(joined).doesNotContain("00");
+        }
+    }
+
     // ---- #5 이미지 삽입 시 텍스트 제거 ----
 
     @Test

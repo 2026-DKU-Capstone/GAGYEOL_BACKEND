@@ -25,6 +25,13 @@ import java.util.Map;
 @Slf4j
 public class FormFillService {
 
+    /** EvidenceService가 그룹 정보로 구성한 단체명(예: "단국대학 소프트웨어학과 학생회"). 양식의 "00대학 …학생회" 자리표시자 교체용 예약 키. */
+    public static final String ORG_TITLE_KEY = "__ORG_TITLE__";
+
+    /** 양식에 박혀 있는 단체명 자리표시자: "00대학 00학과(부) 00전공 학생회" 류(00/OO/○○ 등 허용)를 통째로 매칭. */
+    private static final java.util.regex.Pattern ORG_PLACEHOLDER =
+            java.util.regex.Pattern.compile("[0０OoＯｏ○◯]{2,}\\s*대학[\\s\\S]*?학생회");
+
     /**
      * 파일 확장자에 따라 DOCX 또는 XLSX 채우기를 호출합니다.
      * (backward compatibility - 이미지 없이 텍스트 필드만 채움)
@@ -52,11 +59,18 @@ public class FormFillService {
         if (generatedFields == null) {
             generatedFields = Collections.emptySet();
         }
+        // 그룹 단체명 자리표시자 교체용 값은 예약 키로 전달됨 — 일반 필드 루프에서 제외하고 별도 패스로 처리
+        String orgTitle = allFields.get(ORG_TITLE_KEY);
+        if (orgTitle != null) {
+            allFields = new java.util.LinkedHashMap<>(allFields);
+            allFields.remove(ORG_TITLE_KEY);
+        }
+
         String lower = filePath.toLowerCase();
         if (lower.endsWith(".docx")) {
-            return fillDocx(filePath, allFields, imageFieldsBytes);
+            return fillDocx(filePath, allFields, imageFieldsBytes, orgTitle);
         } else if (lower.endsWith(".xlsx") || lower.endsWith(".xls")) {
-            return fillXlsx(filePath, allFields, imageFieldsBytes, generatedFields);
+            return fillXlsx(filePath, allFields, imageFieldsBytes, generatedFields, orgTitle);
         } else {
             throw new IllegalArgumentException("지원하지 않는 양식 파일 형식: " + filePath);
         }
@@ -65,7 +79,8 @@ public class FormFillService {
     /**
      * DOCX 파일의 테이블 셀과 단락에서 필드명을 탐색하여 인접 빈 셀/다음 줄에 값을 채웁니다.
      */
-    private byte[] fillDocx(String filePath, Map<String, String> allFields, Map<String, byte[]> imageFieldsBytes) throws IOException {
+    private byte[] fillDocx(String filePath, Map<String, String> allFields, Map<String, byte[]> imageFieldsBytes,
+                            String orgTitle) throws IOException {
         try (FileInputStream fis = new FileInputStream(filePath);
              XWPFDocument doc = new XWPFDocument(fis)) {
 
@@ -150,9 +165,64 @@ public class FormFillService {
                 insertDocxImages(doc, imageFieldsBytes);
             }
 
+            // 그룹 단체명 자리표시자("00대학 …학생회") 교체
+            if (orgTitle != null && !orgTitle.isBlank()) {
+                replaceOrgTitle(doc, orgTitle);
+            }
+
             ByteArrayOutputStream out = new ByteArrayOutputStream();
             doc.write(out);
             return out.toByteArray();
+        }
+    }
+
+    /** DOCX 전체(상위 단락·표 셀 단락)에서 단체명 자리표시자를 실제 단체명으로 교체. */
+    private void replaceOrgTitle(XWPFDocument doc, String orgTitle) {
+        for (XWPFParagraph p : doc.getParagraphs()) replaceOrgTitleInParagraph(p, orgTitle);
+        for (XWPFTable t : doc.getTables()) {
+            for (XWPFTableRow r : t.getRows()) {
+                for (XWPFTableCell c : r.getTableCells()) {
+                    for (XWPFParagraph p : c.getParagraphs()) replaceOrgTitleInParagraph(p, orgTitle);
+                }
+            }
+        }
+    }
+
+    private void replaceOrgTitleInParagraph(XWPFParagraph para, String orgTitle) {
+        String text = para.getText();
+        if (text == null || text.isEmpty()) return;
+        java.util.regex.Matcher m = ORG_PLACEHOLDER.matcher(text);
+        if (!m.find()) return;
+        String replaced = m.replaceAll(java.util.regex.Matcher.quoteReplacement(orgTitle));
+        // placeholder가 여러 run에 걸쳐 있을 수 있으므로 첫 run에 결과를 모으고 나머지는 제거
+        for (int i = para.getRuns().size() - 1; i > 0; i--) para.removeRun(i);
+        if (para.getRuns().isEmpty()) {
+            para.createRun().setText(replaced);
+        } else {
+            para.getRuns().get(0).setText(replaced, 0);
+        }
+        log.info("DOCX 단체명 자리표시자 교체 → {}", orgTitle);
+    }
+
+    /** XLSX/XLS 전체 시트의 문자열 셀에서 단체명 자리표시자를 교체. */
+    private void replaceOrgTitle(Workbook workbook, String orgTitle) {
+        for (int si = 0; si < workbook.getNumberOfSheets(); si++) {
+            Sheet sheet = workbook.getSheetAt(si);
+            for (Row row : sheet) {
+                if (row == null) continue;
+                short last = row.getLastCellNum();
+                for (int ci = 0; ci < last; ci++) {
+                    Cell cell = row.getCell(ci);
+                    if (cell == null || cell.getCellType() != CellType.STRING) continue;
+                    String v = cell.getStringCellValue();
+                    if (v == null || v.isEmpty()) continue;
+                    java.util.regex.Matcher m = ORG_PLACEHOLDER.matcher(v);
+                    if (m.find()) {
+                        cell.setCellValue(m.replaceAll(java.util.regex.Matcher.quoteReplacement(orgTitle)));
+                        log.info("XLSX 단체명 자리표시자 교체 → {}", orgTitle);
+                    }
+                }
+            }
         }
     }
 
@@ -567,7 +637,7 @@ public class FormFillService {
     }
 
     private byte[] fillXlsx(String filePath, Map<String, String> allFields, Map<String, byte[]> imageFieldsBytes,
-                             java.util.Set<String> generatedFields) throws IOException {
+                             java.util.Set<String> generatedFields, String orgTitle) throws IOException {
         try (FileInputStream fis = new FileInputStream(filePath);
              Workbook workbook = WorkbookFactory.create(fis)) {
 
@@ -617,6 +687,11 @@ public class FormFillService {
 
             // Phase 2: 표 데이터를 합계 행 위까지 채우고, 칸을 초과하면 양식 시트를 복제해 다음 양식지로 이어 쓴다.
             applyMultiRowFills(workbook, multiRowFills, centerStyleCache);
+
+            // 그룹 단체명 자리표시자("00대학 …학생회") 교체 (복제된 페이지의 머리글도 함께 교체됨)
+            if (orgTitle != null && !orgTitle.isBlank()) {
+                replaceOrgTitle(workbook, orgTitle);
+            }
 
             // 이미지 필드 삽입 - 텍스트 채우기 완료 후 별도 단계로 실행
             if (!imageFieldsBytes.isEmpty()) {
