@@ -639,6 +639,8 @@ public class FormFillService {
      */
     private static final int MULTIROW_MIN_PARTS = 3;
     private static final int MULTIROW_MAX_TOKEN_LEN = 30;
+    /** 표 데이터 시트 복제(페이지) 상한 — cloneSheet 폭주로 인한 OutOfMemoryError 방지. */
+    private static final int MAX_TABLE_PAGES = 30;
 
     /**
      * startRow부터 아래로 스캔해 '합계/소계/총계/총액' 라벨이 있는 행 번호를 찾는다. 없으면 -1.
@@ -721,6 +723,14 @@ public class FormFillService {
             int maxTokens = 0;
             for (MultiRowFill f : group) maxTokens = Math.max(maxTokens, f.values.size());
             int pages = (capacity == Integer.MAX_VALUE) ? 1 : (int) Math.ceil((double) maxTokens / capacity);
+
+            // 안전장치: 시트 복제 폭주로 인한 OutOfMemoryError 방지.
+            // (합계 행이 헤더 바로 아래라 capacity가 작거나 토큰이 비정상적으로 많을 때 수백 장 복제되는 것을 막음)
+            if (pages > MAX_TABLE_PAGES) {
+                log.warn("XLSX 표 페이지 수가 과도함({}) - {}장으로 제한 (capacity={}, maxTokens={})",
+                        pages, MAX_TABLE_PAGES, capacity, maxTokens);
+                pages = MAX_TABLE_PAGES;
+            }
 
             // 페이지 시트 준비: page0 = 원본, 추가 페이지는 데이터 쓰기 전의 깨끗한 원본 복제본
             List<Sheet> pageSheets = new java.util.ArrayList<>();
