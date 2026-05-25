@@ -550,10 +550,12 @@ public class FormFillService {
     private boolean fillInline(XWPFTableCell cell, String rawCellText, String normalizedField, String value) {
         String trimmed = rawCellText.trim();
 
+        // 패턴 1: "레이블 :   (인)" — 콜론 바로 앞 라벨이 이 필드일 때만.
+        // (맺음말 "위의 내용과 같이…지출인 : (인)"처럼 문장 속에 필드명이 부분 포함된 셀은 채우지 않음)
         if (trimmed.contains(":") && trimmed.contains("(인)")) {
             int colonIdx = trimmed.indexOf(":");
             int inIdx = trimmed.indexOf("(인)");
-            if (colonIdx < inIdx) {
+            if (colonIdx < inIdx && labelMatchesField(trimmed.substring(0, colonIdx), normalizedField)) {
                 String beforeColon = trimmed.substring(0, colonIdx + 1);
                 String inPart = trimmed.substring(inIdx);
                 setCellText(cell, beforeColon + " " + value + "  " + inPart);
@@ -561,27 +563,37 @@ public class FormFillService {
             }
         }
 
-        if (trimmed.endsWith(":")) {
+        // 패턴 2: "레이블 :" — 콜론 앞 라벨이 이 필드일 때만
+        if (trimmed.endsWith(":") && labelMatchesField(trimmed.substring(0, trimmed.length() - 1), normalizedField)) {
             setCellText(cell, trimmed + " " + value);
             return true;
         }
 
+        // 패턴 3: 셀 텍스트 = 필드명 → 값으로 교체
         if (normalize(trimmed).equals(normalizedField)) {
             clearCellText(cell, value);
             return true;
         }
 
-        // 패턴 4: "[회장       (인)]" 형태 — 콜론 없이 (인)만 있는 경우
-        // 필드명 뒤 공백에 이름을 삽입 → "[회장 값  (인)]"
-        if (trimmed.contains("(인)") && normalize(trimmed).contains(normalizedField)) {
+        // 패턴 4: "[회장       (인)]" 형태 — 콜론 없이 (인)만 있는 경우.
+        // (인) 바로 앞 라벨이 이 필드일 때만 채운다.
+        if (trimmed.contains("(인)")) {
             int inIdx = trimmed.indexOf("(인)");
-            String beforeIn = trimmed.substring(0, inIdx).stripTrailing();
-            String afterIn = trimmed.substring(inIdx);
-            setCellText(cell, beforeIn + " " + value + "  " + afterIn);
-            return true;
+            if (labelMatchesField(trimmed.substring(0, inIdx), normalizedField)) {
+                String beforeIn = trimmed.substring(0, inIdx).stripTrailing();
+                String afterIn = trimmed.substring(inIdx);
+                setCellText(cell, beforeIn + " " + value + "  " + afterIn);
+                return true;
+            }
         }
 
         return false;
+    }
+
+    /** 콜론/(인) 바로 앞 텍스트가 이 필드를 '라벨'로 갖는지 — 끝부분이 필드명과 일치할 때만 true.
+     *  문장 속에 필드명이 부분 포함된 경우(예: "…위의 내용과 같이…지출인" vs 필드 "내용")를 걸러낸다. */
+    private boolean labelMatchesField(String beforeMarker, String normalizedField) {
+        return normalize(beforeMarker).endsWith(normalizedField);
     }
 
     // 셀의 모든 단락·run을 비우고 첫 run에만 값을 씀 (여러 단락으로 된 레이블 셀 교체용)
@@ -621,7 +633,14 @@ public class FormFillService {
                 para.createRun().setText(value);
             } else {
                 para.getRuns().get(0).setText(value, 0);
+                // 첫 run 외 나머지 run은 비운다 — 여러 run으로 쪼개진 기존 텍스트가 잔류해 중복되는 것 방지
+                for (int j = para.getRuns().size() - 1; j >= 1; j--) para.removeRun(j);
             }
+        }
+        // 같은 셀의 나머지 단락에 남은 텍스트도 제거 (중복 방지)
+        for (int p = 1; p < cell.getParagraphs().size(); p++) {
+            XWPFParagraph extra = cell.getParagraphs().get(p);
+            for (int j = extra.getRuns().size() - 1; j >= 0; j--) extra.removeRun(j);
         }
         para.setAlignment(ParagraphAlignment.CENTER); // 값 수평 가운데 (#6)
     }
