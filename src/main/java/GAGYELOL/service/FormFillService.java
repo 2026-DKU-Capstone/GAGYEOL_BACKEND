@@ -338,7 +338,11 @@ public class FormFillService {
             XWPFParagraph para = cell.getParagraphs().isEmpty() ? cell.addParagraph() : cell.getParagraphs().get(0);
             para.setAlignment(ParagraphAlignment.CENTER);
             XWPFRun run = para.createRun();
-            int[] dims = getCellDimensionsEmu(cell); // 셀 실제 크기로 꽉 채움
+            int[] box = getCellDimensionsEmu(cell);
+            // 셀 박스 안에 원본 비율을 유지하며 최대한 크게 (테두리에 닿지 않도록 약간의 여백)
+            int boxWpx = Math.max(1, (int) Math.round(box[0] / (double) Units.EMU_PER_PIXEL * 0.95));
+            int boxHpx = Math.max(1, (int) Math.round(box[1] / (double) Units.EMU_PER_PIXEL * 0.95));
+            int[] dims = fitDimensionsEmu(imageBytes, boxWpx, boxHpx);
             try (ByteArrayInputStream imgStream = new ByteArrayInputStream(imageBytes)) {
                 run.addPicture(imgStream, docxPicType, fieldName, dims[0], dims[1]);
             }
@@ -351,36 +355,70 @@ public class FormFillService {
     }
 
     private static final Pattern TWIPS_W = Pattern.compile("w:w=\"(\\d+)\"");
-    private static final Pattern TWIPS_H = Pattern.compile("w:val=\"(\\d+)\"");
+    private static final Pattern GRIDSPAN_VAL = Pattern.compile("w:val=\"(\\d+)\"");
 
-    /** 셀의 실제 너비·높이를 XML에서 읽어 EMU로 반환. 읽기 실패 시 기본값(260×340px) 사용. */
+    /**
+     * 이미지를 넣을 셀의 실제 너비·높이를 계산해 EMU로 반환한다.
+     * 너비: 셀에 tcW가 명시돼 있으면 사용하고, 없으면(많은 양식이 tblGrid에만 너비를 둠)
+     *       tblGrid 전체 너비를 gridSpan 비율로 안분해 병합 셀 너비를 추정한다.
+     * 높이: 행 trHeight(twips). 읽기 실패 시 기본값(260×340px) 사용.
+     */
     private int[] getCellDimensionsEmu(XWPFTableCell cell) {
-        int w = Units.toEMU(260); // 기본 ~6.9cm (표준 사진 부착 셀 기준)
-        int h = Units.toEMU(340); // 기본 ~9.0cm
+        Integer widthTwips = null;
+        Integer heightTwips = null;
         try {
             CTTcPr tcPr = cell.getCTTc().isSetTcPr() ? cell.getCTTc().getTcPr() : null;
             if (tcPr != null && tcPr.isSetTcW()) {
-                // <w:tcW w:type="dxa" w:w="1701"/> — twips 단위
                 Matcher m = TWIPS_W.matcher(tcPr.getTcW().xmlText());
                 if (m.find()) {
-                    int twips = Integer.parseInt(m.group(1));
-                    if (twips > 100) w = twips * 635; // 1 twip = 635 EMU, 잡음값 제외
+                    int t = Integer.parseInt(m.group(1));
+                    if (t > 100) widthTwips = t;
                 }
             }
             XWPFTableRow row = cell.getTableRow();
-            if (row != null && row.getCtRow().isSetTrPr()) {
-                // <w:trHeight w:val="851"/> — twips 단위
-                Matcher m = TWIPS_H.matcher(row.getCtRow().getTrPr().xmlText());
-                if (m.find()) {
-                    int twips = Integer.parseInt(m.group(1));
-                    if (twips > 100) h = twips * 635;
-                }
+            if (widthTwips == null && row != null) {
+                widthTwips = estimatedCellWidthTwips(row, cell); // tcW 미설정 양식 대응
+            }
+            if (row != null) {
+                int rh = row.getHeight(); // trHeight (twips), 미설정 시 0
+                if (rh > 100) heightTwips = rh;
             }
         } catch (Exception e) {
             log.info("셀 크기 계산 실패, 기본값 사용: {}", e.getMessage());
         }
-        log.info("DOCX 이미지 셀 크기 (EMU): w={} h={}", w, h);
+        int w = (widthTwips != null) ? widthTwips * 635 : Units.toEMU(260);  // 1 twip = 635 EMU
+        int h = (heightTwips != null) ? heightTwips * 635 : Units.toEMU(340);
+        log.info("DOCX 이미지 셀 크기: twipsW={}, twipsH={} → EMU {}x{}", widthTwips, heightTwips, w, h);
         return new int[]{w, h};
+    }
+
+    /** tblGrid 전체 너비를 gridSpan 비율로 안분해 (병합) 셀 너비(twips)를 추정. tcW가 없는 양식 대응. */
+    private Integer estimatedCellWidthTwips(XWPFTableRow row, XWPFTableCell cell) {
+        try {
+            XWPFTable table = row.getTable();
+            if (table == null) return null;
+            int total = 0, cols = 0;
+            Matcher gm = TWIPS_W.matcher(table.getCTTbl().getTblGrid().xmlText());
+            while (gm.find()) { total += Integer.parseInt(gm.group(1)); cols++; }
+            if (cols == 0 || total <= 100) return null;
+            int span = gridSpanOf(cell);
+            int est = (int) Math.round((double) total * span / cols);
+            return est > 100 ? est : null;
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    /** 셀의 gridSpan(가로 병합 칸 수). 미설정 시 1. */
+    private int gridSpanOf(XWPFTableCell cell) {
+        try {
+            CTTcPr p = cell.getCTTc().isSetTcPr() ? cell.getCTTc().getTcPr() : null;
+            if (p != null && p.isSetGridSpan()) {
+                Matcher m = GRIDSPAN_VAL.matcher(p.getGridSpan().xmlText());
+                if (m.find()) return Math.max(1, Integer.parseInt(m.group(1)));
+            }
+        } catch (Exception ignored) {}
+        return 1;
     }
 
     /** 셀의 모든 단락에서 run(텍스트)을 제거한다. 단락 구조는 유지하고 첫 단락을 이미지용으로 재사용한다. (#5) */
@@ -392,8 +430,22 @@ public class FormFillService {
         }
     }
 
-    /** 셀 박스를 꽉 채우는 크기(EMU)를 반환한다. */
+    /**
+     * 박스(maxWpx×maxHpx) 안에 원본 비율을 유지하며 최대 크기로 맞춘 EMU 크기를 반환한다.
+     * scale = min(maxW/원본W, maxH/원본H). 디코딩 실패 시 박스 크기를 그대로 사용. (#5)
+     */
     int[] fitDimensionsEmu(byte[] imageBytes, int maxWpx, int maxHpx) {
+        try (ByteArrayInputStream bis = new ByteArrayInputStream(imageBytes)) {
+            BufferedImage img = ImageIO.read(bis);
+            if (img != null && img.getWidth() > 0 && img.getHeight() > 0) {
+                double scale = Math.min((double) maxWpx / img.getWidth(), (double) maxHpx / img.getHeight());
+                int w = Math.max(1, (int) Math.round(img.getWidth() * scale));
+                int h = Math.max(1, (int) Math.round(img.getHeight() * scale));
+                return new int[]{Units.toEMU(w), Units.toEMU(h)};
+            }
+        } catch (IOException e) {
+            log.warn("이미지 크기 계산 실패, 기본 박스 크기 사용 - {}", e.getMessage());
+        }
         return new int[]{Units.toEMU(maxWpx), Units.toEMU(maxHpx)};
     }
 
