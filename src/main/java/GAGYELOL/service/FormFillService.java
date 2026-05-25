@@ -716,9 +716,11 @@ public class FormFillService {
      * 라벨 위치+텍스트만 쓰므로 월 표기가 달라도 동일 서명이 된다.
      */
     private String sheetSignature(Sheet sheet, java.util.Set<String> fieldNames) {
-        StringBuilder sb = new StringBuilder();
-        int last = sheet.getLastRowNum();
-        for (int r = 0; r <= last && sb.length() < 4000; r++) {
+        // 위치는 무시하고 '라벨 텍스트 집합'만 사용 → 합계 행 위치나 월 표기가 조금씩 달라도
+        // 동일 양식이면 같은 서명이 된다. (헤더/합계는 상단부에 있으므로 앞쪽 행만 스캔)
+        java.util.TreeSet<String> labels = new java.util.TreeSet<>();
+        int last = Math.min(sheet.getLastRowNum(), 200);
+        for (int r = 0; r <= last; r++) {
             Row row = sheet.getRow(r);
             if (row == null) continue;
             short lc = row.getLastCellNum();
@@ -734,10 +736,10 @@ public class FormFillService {
                         if (f != null && !f.isBlank() && nv.contains(normalize(f))) { structural = true; break; }
                     }
                 }
-                if (structural) sb.append(r).append(':').append(c).append('=').append(nv).append('|');
+                if (structural) labels.add(nv);
             }
         }
-        return sb.toString();
+        return String.join("|", labels);
     }
 
     private void applyMultiRowFills(Workbook workbook, List<MultiRowFill> fills, Map<Short, CellStyle> cache) {
