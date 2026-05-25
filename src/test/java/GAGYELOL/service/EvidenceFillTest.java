@@ -73,7 +73,7 @@ class EvidenceFillTest {
 
         when(evidenceRepository.findById(1L)).thenReturn(Optional.of(evidence));
         when(formRepository.findById(10L)).thenReturn(Optional.of(form));
-        when(formAiService.generateFieldContent(eq("단국대 캡스톤 프로젝트"), isNull(), eq("내용")))
+        when(formAiService.generateFieldContent(eq("단국대 캡스톤 프로젝트"), isNull(), eq("내용"), any()))
                 .thenReturn("단국대학교 캡스톤디자인 과제 수행을 위한 물품 구매 비용입니다.");
         // 지출인 성명은 그룹 등록 정보로 채워지므로 영수증 IE에는 "금액"만 전달됨
         when(evidenceAiService.fillFormFields(any(), any(), eq(List.of("금액"))))
@@ -91,7 +91,7 @@ class EvidenceFillTest {
         assertThat(result.getFilledFields()).containsEntry("지출인 성명", "홍길동");
         assertThat(result.getFilledFields()).containsEntry("금액", "50000");
         assertThat(result.getMissingFields()).isEmpty();
-        verify(formAiService).generateFieldContent(eq("단국대 캡스톤 프로젝트"), isNull(), eq("내용"));
+        verify(formAiService).generateFieldContent(eq("단국대 캡스톤 프로젝트"), isNull(), eq("내용"), any());
     }
 
     @Test
@@ -127,7 +127,7 @@ class EvidenceFillTest {
         FillFieldsResponse.FormFillResult result = response.getResults().get(0);
         assertThat(result.getMissingFields()).contains("내용");
         assertThat(result.getFilledFields()).containsEntry("금액", "30000");
-        verify(formAiService, never()).generateFieldContent(any(), any(), any());
+        verify(formAiService, never()).generateFieldContent(any(), any(), any(), any());
     }
 
     @Test

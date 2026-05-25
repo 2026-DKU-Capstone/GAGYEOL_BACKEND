@@ -585,18 +585,30 @@ public class EvidenceService {
         return allFields;
     }
 
-    /** 양식의 대학 자리표시자("00대학")에 들어갈 고정 대학명. */
+    /** payerAffiliation이 비어 있을 때만 쓰는 대학명 폴백. */
     private static final String UNIVERSITY_NAME = "단국대학";
 
     /**
      * 양식에 박혀 있는 단체명 자리표시자("00대학 00학과(부) 00전공 학생회")를
-     * "단국대학 {그룹 이름}"으로 교체하도록 예약 키에 담는다. (FormFillService가 처리)
+     * 그룹 지출인 정보의 소속("SW융합대학 소프트웨어학과(부) 소프트웨어전공")에
+     * "학생회"를 붙인 값으로 교체하도록 예약 키에 담는다. (FormFillService가 처리)
      */
     private void applyGroupOrgTitle(Map<String, String> allFields, Evidence evidence) {
         UserGroup group = evidence.getGroup();
-        if (group != null && group.getName() != null && !group.getName().isBlank()) {
-            allFields.put(FormFillService.ORG_TITLE_KEY, UNIVERSITY_NAME + " " + group.getName().trim());
+        if (group == null) {
+            return;
         }
+        String affiliation = group.getPayerAffiliation();
+        String orgTitle;
+        if (affiliation != null && !affiliation.isBlank()) {
+            String trimmed = affiliation.trim();
+            orgTitle = trimmed.endsWith("학생회") ? trimmed : trimmed + " 학생회";
+        } else if (group.getName() != null && !group.getName().isBlank()) {
+            orgTitle = UNIVERSITY_NAME + " " + group.getName().trim();
+        } else {
+            return;
+        }
+        allFields.put(FormFillService.ORG_TITLE_KEY, orgTitle);
     }
 
     private String normalizeDateValue(String value) {
