@@ -479,11 +479,25 @@ public class EvidenceService {
         log.info("수령인 정보 추출 완료 - name={}, affiliation={}, studentId={}, phone={}",
                 info.get("name"), info.get("affiliation"), info.get("studentId"), info.get("phone"));
         return RecipientInfoResponse.builder()
-                .name(info.getOrDefault("name", ""))
+                .name(koreanOnlyName(info.getOrDefault("name", "")))   // 수령인 이름은 한글만 (학생증의 영문 표기 제거)
                 .affiliation(info.getOrDefault("affiliation", ""))
                 .studentId(info.getOrDefault("studentId", ""))
                 .phone(info.getOrDefault("phone", ""))
                 .build();
+    }
+
+    /** 수령인 이름에서 한글(과 공백)만 남긴다. 학생증의 영문 병기(예: "박세현 PARK SE HYEON") 제거용.
+     *  한글이 전혀 없으면 원본을 그대로 둔다. */
+    private String koreanOnlyName(String name) {
+        if (name == null) return null;
+        String r = name.replaceAll("[^가-힣\\s]", "").replaceAll("\\s+", " ").trim();
+        return r.isEmpty() ? name.trim() : r;
+    }
+
+    /** 양식의 수령인 이름 필드(수령인/수령자 + 성명/이름) 값을 한글만 남기도록 정리한다. */
+    private void cleanRecipientNames(Map<String, String> allFields) {
+        allFields.replaceAll((k, v) ->
+                (isRecipientField(k) && (k.contains("성명") || k.contains("이름"))) ? koreanOnlyName(v) : v);
     }
 
     /**
@@ -530,6 +544,7 @@ public class EvidenceService {
         Form form = formRepository.findById(input.getFormId())
                 .orElseThrow(() -> new IllegalArgumentException("양식지를 찾을 수 없습니다: " + input.getFormId()));
         Map<String, String> allFields = mergeFields(input);
+        cleanRecipientNames(allFields);
         applyGroupOrgTitle(allFields, evidence);
         applySignatureAndDate(allFields, evidence);
         Map<String, byte[]> imageBytesMap = resolveImageBytes(evidence, input.getImageFields());
@@ -552,6 +567,7 @@ public class EvidenceService {
                 Form form = formRepository.findById(input.getFormId())
                         .orElseThrow(() -> new IllegalArgumentException("양식지를 찾을 수 없습니다: " + input.getFormId()));
                 Map<String, String> allFields = mergeFields(input);
+                cleanRecipientNames(allFields);
                 applyGroupOrgTitle(allFields, evidence);
                 applySignatureAndDate(allFields, evidence);
                 Map<String, byte[]> imageBytesMap = resolveImageBytes(evidence, input.getImageFields());
