@@ -128,6 +128,12 @@ public class EvidenceAiService {
      */
     private static String fieldDescription(String field) {
         String base = field + " 항목의 값";
+
+        // 수입지출관리대장(원장) 열 ← 은행 거래내역(통장) 열 매핑. 행별 다중값이므로 합산 금지.
+        // (금액 필드 합산 규칙보다 먼저 검사)
+        String ledger = ledgerColumnDescription(field);
+        if (ledger != null) return ledger;
+
         if (isAmountField(field)) {
             return base + ". 금액은 음수 기호(-)를 제거하고 절댓값(양수)으로만 반환하고, "
                     + "공급가액·부가세 등 세부 금액 항목이 여러 개이면 모두 합산한 총합 금액 하나만 숫자로 반환할 것";
@@ -138,6 +144,27 @@ public class EvidenceAiService {
                     + "형식은 YYYY년 MM월 DD일 또는 YY/MM/DD 중 원문 맥락에 맞는 것으로 통일할 것";
         }
         return base;
+    }
+
+    /**
+     * 수입지출관리대장 표 열(수입금액·지출금액·잔액)을 은행 거래내역(통장)의 대응 열에 매핑한다.
+     * - 수입금액 ← '찾으신 금액' 열
+     * - 지출금액 ← '맡기신 금액' 열
+     * - 잔액   ← '거래후 잔액' 열
+     * 표(행별) 데이터이므로 각 거래(행) 값을 순서대로 모두 콤마로 나열하고 절대 합산하지 않는다.
+     * 해당 필드가 아니면 null.
+     */
+    private static String ledgerColumnDescription(String field) {
+        String sourceColumn;
+        if (field.contains("수입") && field.contains("금액"))      sourceColumn = "'찾으신 금액'(출금) 열";
+        else if (field.contains("지출") && field.contains("금액")) sourceColumn = "'맡기신 금액'(입금) 열";
+        else if (field.contains("잔액"))                          sourceColumn = "'거래후 잔액' 열";
+        else return null;
+
+        return field + " 항목의 값. 입력이 은행 거래내역(통장 거래내역조회)이면 " + sourceColumn + "에 해당한다. "
+                + "표의 각 거래(행) 값을 위에서부터 순서대로 모두 콤마(,)로 구분해 나열할 것. 절대 합산하지 말 것. "
+                + "특정 행에 값이 없으면 그 자리를 빈칸으로 두어 행 순서를 유지할 것. "
+                + "숫자만(원화기호·천단위 콤마 없이) 반환할 것.";
     }
 
     private static boolean isAmountField(String field) {
