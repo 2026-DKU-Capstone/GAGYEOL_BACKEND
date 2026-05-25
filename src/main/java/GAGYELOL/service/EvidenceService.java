@@ -502,6 +502,7 @@ public class EvidenceService {
         Form form = formRepository.findById(input.getFormId())
                 .orElseThrow(() -> new IllegalArgumentException("양식지를 찾을 수 없습니다: " + input.getFormId()));
         Map<String, String> allFields = mergeFields(input);
+        applyGroupOrgTitle(allFields, evidence);
         Map<String, byte[]> imageBytesMap = resolveImageBytes(evidence, input.getImageFields());
         Set<String> generatedFields = parseGeneratedFields(form);
         log.info("양식지 최종 완성 - formId={}, 필드 수={}, 이미지 수={}, generatedFields={}",
@@ -522,6 +523,7 @@ public class EvidenceService {
                 Form form = formRepository.findById(input.getFormId())
                         .orElseThrow(() -> new IllegalArgumentException("양식지를 찾을 수 없습니다: " + input.getFormId()));
                 Map<String, String> allFields = mergeFields(input);
+                applyGroupOrgTitle(allFields, evidence);
                 Map<String, byte[]> imageBytesMap = resolveImageBytes(evidence, input.getImageFields());
                 Set<String> generatedFields = parseGeneratedFields(form);
                 ensureFormFileExists(form);
@@ -581,6 +583,32 @@ public class EvidenceService {
         if (input.getUserInputFields() != null) allFields.putAll(input.getUserInputFields());
         allFields.replaceAll((key, value) -> key.contains("날짜") ? normalizeDateValue(value) : value);
         return allFields;
+    }
+
+    /** payerAffiliation이 비어 있을 때만 쓰는 대학명 폴백. */
+    private static final String UNIVERSITY_NAME = "단국대학";
+
+    /**
+     * 양식에 박혀 있는 단체명 자리표시자("00대학 00학과(부) 00전공 학생회")를
+     * 그룹 지출인 정보의 소속("SW융합대학 소프트웨어학과(부) 소프트웨어전공")에
+     * "학생회"를 붙인 값으로 교체하도록 예약 키에 담는다. (FormFillService가 처리)
+     */
+    private void applyGroupOrgTitle(Map<String, String> allFields, Evidence evidence) {
+        UserGroup group = evidence.getGroup();
+        if (group == null) {
+            return;
+        }
+        String affiliation = group.getPayerAffiliation();
+        String orgTitle;
+        if (affiliation != null && !affiliation.isBlank()) {
+            String trimmed = affiliation.trim();
+            orgTitle = trimmed.endsWith("학생회") ? trimmed : trimmed + " 학생회";
+        } else if (group.getName() != null && !group.getName().isBlank()) {
+            orgTitle = UNIVERSITY_NAME + " " + group.getName().trim();
+        } else {
+            return;
+        }
+        allFields.put(FormFillService.ORG_TITLE_KEY, orgTitle);
     }
 
     private String normalizeDateValue(String value) {

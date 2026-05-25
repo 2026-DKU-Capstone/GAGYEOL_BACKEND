@@ -1,5 +1,6 @@
 package GAGYELOL.service;
 
+import org.apache.poi.hssf.usermodel.HSSFWorkbook;
 import org.apache.poi.ss.usermodel.*;
 import org.apache.poi.xssf.usermodel.XSSFWorkbook;
 import org.junit.jupiter.api.Test;
@@ -192,6 +193,67 @@ class FormFillServiceXlsxTest {
             assertThat(page2.getRow(1).getCell(0).getStringCellValue()).isEqualTo("4");
             assertThat(page2.getRow(2).getCell(0).getStringCellValue()).isEqualTo("5");
             assertThat(page2.getRow(4).getCell(0).getStringCellValue()).isEqualTo("합계");
+        }
+    }
+
+    /**
+     * 구버전 바이너리 .xls(HSSF) 양식에서도 합계 행 경계·시트 분할(cloneSheet)이 깨지지 않아야 한다.
+     * 지출 기록부처럼 표+합계 행이 있는 양식은 항상 이 경로를 타므로 .xls 다운로드 실패의 핵심 재현.
+     */
+    @Test
+    void xls_HSSF_합계행_양식도_초과분이_다음_시트로_복제되고_파일이_유효하다() throws IOException {
+        Path tempFile = tempDir.resolve("form-with-sum.xls");
+        try (HSSFWorkbook wb = new HSSFWorkbook()) {
+            Sheet sheet = wb.createSheet("지출 기록부");
+            sheet.createRow(0).createCell(0).setCellValue("번호"); // 헤더
+            // row 1~3 = 데이터 칸 (빈 행)
+            sheet.createRow(4).createCell(0).setCellValue("합계"); // 합계 행
+            try (FileOutputStream fos = new FileOutputStream(tempFile.toFile())) {
+                wb.write(fos);
+            }
+        }
+
+        Map<String, String> fields = new LinkedHashMap<>();
+        fields.put("번호", "1, 2, 3, 4, 5"); // 5개지만 데이터 칸은 3개(row1~3)
+
+        byte[] result = service.fill(tempFile.toString(), fields);
+
+        // 결과 바이트가 정상 HSSF 파일로 다시 열려야 한다 (다운로드 가능 == 손상 없음)
+        try (Workbook out = WorkbookFactory.create(new ByteArrayInputStream(result))) {
+            assertThat(out.getNumberOfSheets()).isEqualTo(2);
+            Sheet page1 = out.getSheetAt(0);
+            assertThat(page1.getRow(1).getCell(0).getStringCellValue()).isEqualTo("1");
+            assertThat(page1.getRow(3).getCell(0).getStringCellValue()).isEqualTo("3");
+            assertThat(page1.getRow(4).getCell(0).getStringCellValue()).isEqualTo("합계");
+            Sheet page2 = out.getSheetAt(1);
+            assertThat(page2.getRow(1).getCell(0).getStringCellValue()).isEqualTo("4");
+            assertThat(page2.getRow(2).getCell(0).getStringCellValue()).isEqualTo("5");
+        }
+    }
+
+    /**
+     * 양식에 박힌 단체명 자리표시자("00대학 00학과(부) 00전공 학생회")가
+     * 예약 키로 전달된 그룹 단체명("단국대학 {그룹 이름}")으로 통째로 교체된다.
+     */
+    @Test
+    void 단체명_자리표시자가_그룹단체명으로_교체된다() throws IOException {
+        Path tempFile = tempDir.resolve("org-title.xlsx");
+        try (XSSFWorkbook wb = new XSSFWorkbook()) {
+            Sheet sheet = wb.createSheet();
+            sheet.createRow(0).createCell(0).setCellValue("00대학 00학과(부) 00전공 학생회");
+            try (FileOutputStream fos = new FileOutputStream(tempFile.toFile())) {
+                wb.write(fos);
+            }
+        }
+
+        Map<String, String> fields = new LinkedHashMap<>();
+        fields.put(FormFillService.ORG_TITLE_KEY, "단국대학 소프트웨어학과 학생회");
+
+        byte[] result = service.fill(tempFile.toString(), fields);
+
+        try (XSSFWorkbook out = new XSSFWorkbook(new ByteArrayInputStream(result))) {
+            assertThat(out.getSheetAt(0).getRow(0).getCell(0).getStringCellValue())
+                    .isEqualTo("단국대학 소프트웨어학과 학생회");
         }
     }
 
