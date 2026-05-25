@@ -502,6 +502,7 @@ public class EvidenceService {
         Form form = formRepository.findById(input.getFormId())
                 .orElseThrow(() -> new IllegalArgumentException("양식지를 찾을 수 없습니다: " + input.getFormId()));
         Map<String, String> allFields = mergeFields(input);
+        applyGroupOrgTitle(allFields, evidence);
         Map<String, byte[]> imageBytesMap = resolveImageBytes(evidence, input.getImageFields());
         Set<String> generatedFields = parseGeneratedFields(form);
         log.info("양식지 최종 완성 - formId={}, 필드 수={}, 이미지 수={}, generatedFields={}",
@@ -522,6 +523,7 @@ public class EvidenceService {
                 Form form = formRepository.findById(input.getFormId())
                         .orElseThrow(() -> new IllegalArgumentException("양식지를 찾을 수 없습니다: " + input.getFormId()));
                 Map<String, String> allFields = mergeFields(input);
+                applyGroupOrgTitle(allFields, evidence);
                 Map<String, byte[]> imageBytesMap = resolveImageBytes(evidence, input.getImageFields());
                 Set<String> generatedFields = parseGeneratedFields(form);
                 ensureFormFileExists(form);
@@ -581,6 +583,20 @@ public class EvidenceService {
         if (input.getUserInputFields() != null) allFields.putAll(input.getUserInputFields());
         allFields.replaceAll((key, value) -> key.contains("날짜") ? normalizeDateValue(value) : value);
         return allFields;
+    }
+
+    /** 양식의 대학 자리표시자("00대학")에 들어갈 고정 대학명. */
+    private static final String UNIVERSITY_NAME = "단국대학";
+
+    /**
+     * 양식에 박혀 있는 단체명 자리표시자("00대학 00학과(부) 00전공 학생회")를
+     * "단국대학 {그룹 이름}"으로 교체하도록 예약 키에 담는다. (FormFillService가 처리)
+     */
+    private void applyGroupOrgTitle(Map<String, String> allFields, Evidence evidence) {
+        UserGroup group = evidence.getGroup();
+        if (group != null && group.getName() != null && !group.getName().isBlank()) {
+            allFields.put(FormFillService.ORG_TITLE_KEY, UNIVERSITY_NAME + " " + group.getName().trim());
+        }
     }
 
     private String normalizeDateValue(String value) {
