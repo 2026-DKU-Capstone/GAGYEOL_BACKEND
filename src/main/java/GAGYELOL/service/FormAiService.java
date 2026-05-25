@@ -84,12 +84,31 @@ public class FormAiService {
                 사업명: %s
                 %s%s위 사업의 공문서 양식에서 '%s' 항목에 들어갈 내용을 작성해주세요.
                 이미 파악된 항목(품목, 금액, 날짜 등)을 반영해 구체적으로 작성하세요.
-                간결하고 공식적인 문체로 2~3문장 이내로 작성하세요.
+                간결하고 공식적인 문체로 2문장 이내, 공백 포함 %d자 이내로 작성하세요.
                 내용만 반환하고, 다른 설명은 붙이지 마세요.
-                """, businessName, descLine, contextLine, fieldName);
+                """, businessName, descLine, contextLine, fieldName, MAX_CONTENT_LEN);
 
         log.info("LLM 필드 생성 요청 - businessName={}, field={}, contextFields={}", businessName, fieldName,
                 filledFields != null ? filledFields.keySet() : "없음");
-        return openAiClient.chat(prompt, false, 0.7);
+        return limitLength(openAiClient.chat(prompt, false, 0.7), MAX_CONTENT_LEN);
+    }
+
+    /** 생성된 '내용' 등 서술형 필드가 양식 칸을 넘지 않도록 하는 최대 글자 수. */
+    private static final int MAX_CONTENT_LEN = 150;
+
+    /**
+     * 생성 텍스트가 max자를 넘으면 max 이내의 마지막 문장 종결("다." 또는 ".")에서 자른다.
+     * 적당한 종결부가 없으면 max자에서 하드 컷한다. (양식 칸 넘침 방지)
+     */
+    private String limitLength(String text, int max) {
+        if (text == null) return null;
+        String t = text.strip();
+        if (t.length() <= max) return t;
+        String head = t.substring(0, max);
+        int da = head.lastIndexOf("다.");
+        if (da >= max / 2) return head.substring(0, da + 2).strip();
+        int dot = head.lastIndexOf('.');
+        if (dot >= max / 2) return head.substring(0, dot + 1).strip();
+        return head.strip();
     }
 }
