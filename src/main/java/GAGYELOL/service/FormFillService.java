@@ -710,10 +710,12 @@ public class FormFillService {
      * 같은 시트·헤더의 여러 컬럼은 동일한 페이지 경계로 함께 분할된다.
      */
     /**
-     * 시트의 문자열 셀 내용으로 구조 서명을 만든다. (월별 12개 복제 시트처럼 동일 구조 시트를 식별·중복 제거용)
-     * 빈 셀은 무시하고 위치+값만 사용하며, 길이 상한으로 비대 시트도 빠르게 처리한다.
+     * 시트의 '구조'(필드 라벨 셀 + 합계 표식 셀)만으로 서명을 만든다.
+     * 월별 12개 복제 시트처럼 데이터/월 라벨("3월" 등)만 다르고 양식 골격이 같은 시트를
+     * 같은 것으로 인식해 중복 제거(첫 시트에만 채움)하기 위함. 전체 내용 비교가 아니라
+     * 라벨 위치+텍스트만 쓰므로 월 표기가 달라도 동일 서명이 된다.
      */
-    private String sheetSignature(Sheet sheet) {
+    private String sheetSignature(Sheet sheet, java.util.Set<String> fieldNames) {
         StringBuilder sb = new StringBuilder();
         int last = sheet.getLastRowNum();
         for (int r = 0; r <= last && sb.length() < 4000; r++) {
@@ -724,9 +726,15 @@ public class FormFillService {
                 Cell cell = row.getCell(c);
                 if (cell == null || cell.getCellType() != CellType.STRING) continue;
                 String v = cell.getStringCellValue();
-                if (v != null && !v.isBlank()) {
-                    sb.append(r).append(':').append(c).append('=').append(v.trim()).append('|');
+                if (v == null || v.isBlank()) continue;
+                String nv = normalize(v);
+                boolean structural = nv.contains("합계") || nv.contains("소계") || nv.contains("총계") || nv.contains("총액");
+                if (!structural) {
+                    for (String f : fieldNames) {
+                        if (f != null && !f.isBlank() && nv.contains(normalize(f))) { structural = true; break; }
+                    }
                 }
+                if (structural) sb.append(r).append(':').append(c).append('=').append(nv).append('|');
             }
         }
         return sb.toString();
@@ -830,7 +838,7 @@ public class FormFillService {
             java.util.Set<String> seenSheetSig = new java.util.HashSet<>();
             for (int si = 0; si < originalSheetCount; si++) {
                 Sheet sheet = workbook.getSheetAt(si);
-                String sig = sheetSignature(sheet);
+                String sig = sheetSignature(sheet, allFields.keySet());
                 if (!sig.isEmpty() && !seenSheetSig.add(sig)) {
                     log.info("XLSX 동일 구조 중복 시트 건너뜀(첫 시트에만 채움): sheetIndex={}", si);
                     continue;
