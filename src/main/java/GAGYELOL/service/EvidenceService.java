@@ -549,6 +549,7 @@ public class EvidenceService {
         cleanRecipientNames(allFields);
         applyGroupOrgTitle(allFields, evidence);
         applySignatureAndDate(allFields, evidence);
+        applyLedgerContent(allFields, evidence);
         Map<String, byte[]> imageBytesMap = resolveImageBytes(evidence, input.getImageFields());
         Set<String> generatedFields = parseGeneratedFields(form);
         log.info("양식지 최종 완성 - formId={}, 필드 수={}, 이미지 수={}, generatedFields={}",
@@ -572,6 +573,7 @@ public class EvidenceService {
                 cleanRecipientNames(allFields);
                 applyGroupOrgTitle(allFields, evidence);
                 applySignatureAndDate(allFields, evidence);
+                applyLedgerContent(allFields, evidence);
                 Map<String, byte[]> imageBytesMap = resolveImageBytes(evidence, input.getImageFields());
                 Set<String> generatedFields = parseGeneratedFields(form);
                 ensureFormFileExists(form);
@@ -635,6 +637,42 @@ public class EvidenceService {
 
     /** payerAffiliation이 비어 있을 때만 쓰는 대학명 폴백. */
     private static final String UNIVERSITY_NAME = "단국대학";
+
+    /** 양식 필드 집합이 수입지출관리대장(원장)인지 — 수입금액·지출금액·잔액 열을 모두 가질 때. */
+    private static boolean isLedgerFieldSet(java.util.Collection<String> fields) {
+        boolean income = false, expense = false, balance = false;
+        for (String f : fields) {
+            if (f.contains("수입") && f.contains("금액")) income = true;
+            else if (f.contains("지출") && f.contains("금액")) expense = true;
+            if (f.contains("잔액")) balance = true;
+        }
+        return income && expense && balance;
+    }
+
+    /**
+     * 원장(수입지출관리대장)일 때 '내용' 열을 '사업명 - 거래 기재내용' 형태로 합쳐 채운다. (#2)
+     * IE가 추출한 내용(통장 기재내용) 각 행 앞에 입력 사업명을 붙인다. 사업명이 없으면 원본 유지.
+     */
+    private void applyLedgerContent(Map<String, String> allFields, Evidence evidence) {
+        if (!isLedgerFieldSet(allFields.keySet())) return;
+        String biz = evidence.getBusinessName();
+        if (biz == null || biz.isBlank()) return;
+        String contentKey = null;
+        for (String k : allFields.keySet()) {
+            if (k.contains("내용")) { contentKey = k; break; }
+        }
+        if (contentKey == null) return;
+        String v = allFields.get(contentKey);
+        if (v == null || v.isBlank()) return;
+        String bizT = biz.trim();
+        String[] toks = v.split(",\\s+");
+        List<String> out = new ArrayList<>(toks.length);
+        for (String t : toks) {
+            String tt = t.trim();
+            out.add(tt.isEmpty() ? bizT : bizT + " - " + tt);
+        }
+        allFields.put(contentKey, String.join(", ", out));
+    }
 
     /**
      * 양식에 박혀 있는 단체명 자리표시자("00대학 00학과(부) 00전공 학생회")를
