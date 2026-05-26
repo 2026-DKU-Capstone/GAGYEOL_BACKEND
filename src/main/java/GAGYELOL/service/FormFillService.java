@@ -1029,6 +1029,9 @@ public class FormFillService {
             // 자리표시자 교체: 단체명·오늘 날짜·지출인/수령인 서명 (복제된 페이지의 머리글도 함께 교체됨)
             applyTemplateReplacements(workbook, reserved);
 
+            // '담당'·'회장' 라벨 아래의 "OOO (인)" 서명 칸에 지출인 이름·회장 직책 멤버 이름을 채운다.
+            applyManagerPresidentSignatures(workbook, reserved);
+
             // 이미지 필드 삽입 - 텍스트 채우기 완료 후 별도 단계로 실행
             if (!imageFieldsBytes.isEmpty()) {
                 insertXlsxImages(workbook, imageFieldsBytes);
@@ -1126,7 +1129,11 @@ public class FormFillService {
         for (int i = 0; i < n; i++) {
             byMonth.computeIfAbsent(parseMonth(at(dates, i)), k -> new java.util.ArrayList<>()).add(i);
         }
-        for (Map.Entry<Integer, List<Integer>> e : byMonth.entrySet()) {
+        // 월 오름차순으로 처리하고 번호는 시트 간 연속 부여한다 (예: 1월 1,2,3 → 2월 4,5,6). 월 미상은 끝으로.
+        List<Map.Entry<Integer, List<Integer>>> entries = new java.util.ArrayList<>(byMonth.entrySet());
+        entries.sort(java.util.Comparator.comparingInt(e -> e.getKey() > 0 ? e.getKey() : 13));
+        int startNo = 1;
+        for (Map.Entry<Integer, List<Integer>> e : entries) {
             int month = e.getKey();
             Sheet sheet = (month > 0) ? findMonthSheet(wb, month) : null;
             if (sheet == null) {
@@ -1136,14 +1143,15 @@ public class FormFillService {
                 }
             }
             if (sheet == null) continue;
-            fillLedgerSheet(wb, sheet, e.getValue(), dates, contents, incomes, expenses, balances, cache);
+            int filled = fillLedgerSheet(wb, sheet, e.getValue(), dates, contents, incomes, expenses, balances, startNo, cache);
+            startNo += filled; // 다음 월 시트는 이어지는 번호부터
         }
-        wb.setForceFormulaRecalculation(true); // 열어보면 합계·수식이 재계산되도록
+        wb.setForceFormulaRecalculation(true); // 열어보면 수식이 재계산되도록
     }
 
-    private void fillLedgerSheet(Workbook wb, Sheet sheet, List<Integer> rowIdxs,
+    private int fillLedgerSheet(Workbook wb, Sheet sheet, List<Integer> rowIdxs,
                                  List<String> dates, List<String> contents, List<String> incomes,
-                                 List<String> expenses, List<String> balances, Map<Short, CellStyle> cache) {
+                                 List<String> expenses, List<String> balances, int startNo, Map<Short, CellStyle> cache) {
         // 헤더 행/열 탐색 (수입금액·지출금액·잔액이 모두 있는 행)
         int headerRow = -1, colNo = -1, colDate = -1, colContent = -1, colIncome = -1, colExpense = -1, colBalance = -1;
         int lastRow = sheet.getLastRowNum();
@@ -1168,7 +1176,7 @@ public class FormFillService {
                 break;
             }
         }
-        if (headerRow < 0) return;
+        if (headerRow < 0) return 0;
 
         int startRow = headerRow + 1;
         int count = rowIdxs.size();
@@ -1193,17 +1201,26 @@ public class FormFillService {
             }
         }
 
-        // 데이터 채우기 — 번호는 1부터 순번 재부여, 금액·잔액은 숫자로(합계 계산)
+        // 데이터 채우기 — 번호는 startNo부터 시트 간 연속 부여, 금액·잔액은 숫자로
         String lastBalance = null;
+        double sumIncome = 0, sumExpense = 0;
         for (int k = 0; k < count; k++) {
             int gi = rowIdxs.get(k);
             Row tr = sheet.getRow(startRow + k);
             if (tr == null) tr = sheet.createRow(startRow + k);
-            if (colNo >= 0) setLedgerCell(wb, tr, colNo, String.valueOf(k + 1), true, cache);
+            if (colNo >= 0) setLedgerCell(wb, tr, colNo, String.valueOf(startNo + k), true, cache);
             if (colDate >= 0) setLedgerCell(wb, tr, colDate, at(dates, gi), false, cache);
             if (colContent >= 0) setLedgerCell(wb, tr, colContent, at(contents, gi), false, cache);
-            if (colIncome >= 0) setLedgerCell(wb, tr, colIncome, at(incomes, gi), true, cache);
-            if (colExpense >= 0) setLedgerCell(wb, tr, colExpense, at(expenses, gi), true, cache);
+            if (colIncome >= 0) {
+                String v = at(incomes, gi);
+                setLedgerCell(wb, tr, colIncome, v, true, cache);
+                sumIncome += parseAmount(v);
+            }
+            if (colExpense >= 0) {
+                String v = at(expenses, gi);
+                setLedgerCell(wb, tr, colExpense, v, true, cache);
+                sumExpense += parseAmount(v);
+            }
             if (colBalance >= 0) {
                 String bal = at(balances, gi);
                 setLedgerCell(wb, tr, colBalance, bal, true, cache);
@@ -1211,13 +1228,72 @@ public class FormFillService {
             }
         }
 
-        // 합계 행의 잔액 칸("(최종 잔액)")에 마지막 잔액 기록 (수입/지출 합계 칸의 SUM 수식은 그대로 둠)
-        if (sumRowIdx >= 0 && colBalance >= 0 && lastBalance != null) {
+        // 합계 행: 수입금액·지출금액 합계(숫자)와 최종 잔액을 직접 기입 (재계산 없이도 보이도록)
+        if (sumRowIdx >= 0) {
             Row sumRow = sheet.getRow(sumRowIdx);
-            if (sumRow != null) {
-                Cell c = sumRow.getCell(colBalance);
-                if (c == null) c = sumRow.createCell(colBalance);
-                setLedgerCell(wb, sumRow, colBalance, lastBalance, true, cache);
+            if (sumRow == null) sumRow = sheet.createRow(sumRowIdx);
+            if (colIncome >= 0) setLedgerCellNumber(wb, sumRow, colIncome, sumIncome, cache);
+            if (colExpense >= 0) setLedgerCellNumber(wb, sumRow, colExpense, sumExpense, cache);
+            if (colBalance >= 0 && lastBalance != null) setLedgerCell(wb, sumRow, colBalance, lastBalance, true, cache);
+        }
+        return count;
+    }
+
+    private static double parseAmount(String s) {
+        if (s == null) return 0;
+        String d = s.replace(",", "").trim();
+        if (d.isEmpty()) return 0;
+        try { return Double.parseDouble(d); } catch (NumberFormatException e) { return 0; }
+    }
+
+    private void setLedgerCellNumber(Workbook wb, Row row, int col, double value, Map<Short, CellStyle> cache) {
+        Cell c = row.getCell(col);
+        if (c == null) c = row.createCell(col);
+        if (c.getCellType() == CellType.FORMULA) c.setBlank(); // 수식 제거 후 숫자 기입 (재계산 없이도 합계가 보이도록)
+        c.setCellValue(value);
+        applyCenter(wb, c, cache);
+    }
+
+    /**
+     * XLSX에서 '담당'·'회장' 라벨 아래의 "OOO (인)" 서명 칸을 채운다. 라벨 셀과 (인) 셀이 분리된 양식(원장 등) 대응.
+     * 담당 ← 지출인 이름(PAYER_SIGN_KEY), 회장 ← 회장 직책 멤버 이름(REVIEWER_SIGN_KEY). "OOO/박세현" 등 기존 값은 "{이름} (인)"으로 교체.
+     */
+    private void applyManagerPresidentSignatures(Workbook wb, Map<String, String> reserved) {
+        String payer = reserved.get(PAYER_SIGN_KEY);
+        String reviewer = reserved.get(REVIEWER_SIGN_KEY);
+        if ((payer == null || payer.isBlank()) && (reviewer == null || reviewer.isBlank())) return;
+        for (int si = 0; si < wb.getNumberOfSheets(); si++) {
+            Sheet sheet = wb.getSheetAt(si);
+            for (Row row : sheet) {
+                if (row == null) continue;
+                short last = row.getLastCellNum();
+                for (int c = 0; c < last; c++) {
+                    Cell cell = row.getCell(c);
+                    if (cell == null || cell.getCellType() != CellType.STRING) continue;
+                    String t = normalize(cell.getStringCellValue()).replace(" ", "");
+                    if (t.equals("담당") && payer != null && !payer.isBlank()) {
+                        setSignCellBelow(sheet, row.getRowNum(), c, payer);
+                    } else if (t.equals("회장") && reviewer != null && !reviewer.isBlank()) {
+                        setSignCellBelow(sheet, row.getRowNum(), c, reviewer);
+                    }
+                }
+            }
+        }
+    }
+
+    /** 라벨 (labelRow,col) 아래 같은 열에서 "(인)"이 있는 서명 칸을 찾아 "{name} (인)"으로 교체. */
+    private void setSignCellBelow(Sheet sheet, int labelRow, int col, String name) {
+        int last = Math.min(labelRow + 6, sheet.getLastRowNum());
+        for (int r = labelRow + 1; r <= last; r++) {
+            Row row = sheet.getRow(r);
+            if (row == null) continue;
+            Cell cell = row.getCell(col);
+            if (cell == null || cell.getCellType() != CellType.STRING) continue;
+            String v = cell.getStringCellValue();
+            if (v == null) continue;
+            if (normalize(v).replace(" ", "").contains("(인)")) {
+                cell.setCellValue(name + " (인)");
+                return;
             }
         }
     }
@@ -1226,6 +1302,8 @@ public class FormFillService {
     private void setLedgerCell(Workbook wb, Row row, int col, String token, boolean numeric, Map<Short, CellStyle> cache) {
         Cell c = row.getCell(col);
         if (c == null) c = row.createCell(col);
+        // 잔액 등 기존 수식 셀을 실제 값으로 덮어쓸 때 수식이 남지 않도록 먼저 비운다.
+        if (c.getCellType() == CellType.FORMULA) c.setBlank();
         String t = (token == null) ? "" : token.trim();
         if (numeric) {
             String digits = t.replace(",", "");
