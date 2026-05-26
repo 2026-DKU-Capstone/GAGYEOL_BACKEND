@@ -287,6 +287,57 @@ class FormFillServiceXlsxTest {
         }
     }
 
+    /**
+     * (#2) 수입지출관리대장(원장): 통장 거래를 거래일 '월'에 맞는 시트로 분산하고, 번호는 시트마다 1부터
+     * 순번 재부여, 금액·잔액은 숫자로 채우며, 합계 행 잔액 칸에는 마지막 잔액을 적는다.
+     */
+    @Test
+    void 원장은_거래월별_시트로_분산되고_번호순번_숫자금액_최종잔액이_채워진다() throws IOException {
+        Path tempFile = tempDir.resolve("ledger-monthly.xlsx");
+        try (XSSFWorkbook wb = new XSSFWorkbook()) {
+            for (String month : new String[]{"8월", "9월"}) {
+                Sheet s = wb.createSheet(month);
+                Row h = s.createRow(0);
+                String[] heads = {"번호", "날짜", "내용", "수입금액", "지출금액", "잔액"};
+                for (int c = 0; c < heads.length; c++) h.createCell(c).setCellValue(heads[c]);
+                // row 1~3 = 데이터 칸, row4 = 합계
+                s.createRow(4).createCell(0).setCellValue("합계");
+            }
+            try (FileOutputStream fos = new FileOutputStream(tempFile.toFile())) { wb.write(fos); }
+        }
+
+        Map<String, String> fields = new LinkedHashMap<>();
+        fields.put("번호", "1, 2, 3, 4");
+        fields.put("날짜", "25/08/30, 25/09/01, 25/09/02, 25/09/03"); // 8월 1건, 9월 3건
+        fields.put("내용", "고현주, 이마트, 다이소, 쿠팡");
+        fields.put("수입금액", "0, 1000, 2000, 3000");
+        fields.put("지출금액", "100, 0, 0, 0");
+        fields.put("잔액", "900, 1900, 3900, 6900");
+
+        byte[] result = service.fill(tempFile.toString(), fields);
+
+        try (XSSFWorkbook out = new XSSFWorkbook(new ByteArrayInputStream(result))) {
+            Sheet aug = out.getSheet("8월");
+            Sheet sep = out.getSheet("9월");
+
+            // 8월: 거래 1건(고현주), 번호 1, 금액 숫자
+            assertThat(aug.getRow(1).getCell(0).getNumericCellValue()).isEqualTo(1.0);
+            assertThat(aug.getRow(1).getCell(2).getStringCellValue()).isEqualTo("고현주");
+            assertThat(aug.getRow(1).getCell(4).getNumericCellValue()).isEqualTo(100.0); // 지출금액 숫자
+            assertThat(aug.getRow(4).getCell(0).getStringCellValue()).isEqualTo("합계");
+            assertThat(aug.getRow(4).getCell(5).getNumericCellValue()).isEqualTo(900.0); // 최종 잔액
+
+            // 9월: 거래 3건, 번호는 1부터 재부여, 금액 숫자
+            assertThat(sep.getRow(1).getCell(0).getNumericCellValue()).isEqualTo(1.0);
+            assertThat(sep.getRow(2).getCell(0).getNumericCellValue()).isEqualTo(2.0);
+            assertThat(sep.getRow(3).getCell(0).getNumericCellValue()).isEqualTo(3.0);
+            assertThat(sep.getRow(1).getCell(3).getNumericCellValue()).isEqualTo(1000.0); // 수입금액 숫자
+            assertThat(sep.getRow(3).getCell(5).getNumericCellValue()).isEqualTo(6900.0); // 마지막 거래 잔액
+            assertThat(sep.getRow(4).getCell(0).getStringCellValue()).isEqualTo("합계");
+            assertThat(sep.getRow(4).getCell(5).getNumericCellValue()).isEqualTo(6900.0); // 최종 잔액
+        }
+    }
+
     private Path createXlsxWithGappedHeaders() throws IOException {
         Path tempFile = tempDir.resolve("form-gapped.xlsx");
         try (XSSFWorkbook wb = new XSSFWorkbook()) {

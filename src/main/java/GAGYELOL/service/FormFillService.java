@@ -967,6 +967,11 @@ public class FormFillService {
             // Phase 1: 단일 값은 즉시 채우고, 다중행(표) 데이터는 수집만 한다. (합계 행 처리·시트 분할은 Phase 2)
             // 같은 구조가 반복되는 시트(예: 월별 12개 복제 시트)는 첫 시트에만 채운다.
             // — 같은 데이터를 모든 시트에 중복으로 넣지 않고, 거대한 시트를 12배 cloneSheet 하다 OOM 나는 것을 막는다.
+            // 수입지출관리대장(원장)은 통장 거래를 거래(행) 단위로 '월별 시트'에 분산 기록하므로 전용 경로로 처리한다.
+            // (#2: 금액 숫자화→합계 계산, 최종 잔액, 번호 순번 재부여, 월시트 분산)
+            if (isLedger(workbook, allFields.keySet())) {
+                fillLedger(workbook, allFields, centerStyleCache);
+            } else {
             List<MultiRowFill> multiRowFills = new java.util.ArrayList<>();
             int originalSheetCount = workbook.getNumberOfSheets();
             java.util.Set<String> seenSheetSig = new java.util.HashSet<>();
@@ -1019,6 +1024,7 @@ public class FormFillService {
 
             // Phase 2: 표 데이터를 합계 행 위까지 채우고, 칸을 초과하면 양식 시트를 복제해 다음 양식지로 이어 쓴다.
             applyMultiRowFills(workbook, multiRowFills, centerStyleCache);
+            } // end else (원장이 아닌 일반 표 양식)
 
             // 자리표시자 교체: 단체명·오늘 날짜·지출인/수령인 서명 (복제된 페이지의 머리글도 함께 교체됨)
             applyTemplateReplacements(workbook, reserved);
@@ -1032,6 +1038,206 @@ public class FormFillService {
             workbook.write(out);
             return out.toByteArray();
         }
+    }
+
+    // ===== 수입지출관리대장(원장) 전용 채우기 (#2) =====
+
+    /** 원장 양식인지: 수입금액·지출금액·잔액 필드를 모두 채우려 하고, 월별 시트("N월")가 2개 이상. */
+    private boolean isLedger(Workbook wb, java.util.Set<String> fieldKeys) {
+        boolean income = false, expense = false, balance = false;
+        for (String k : fieldKeys) {
+            if (k.contains("수입") && k.contains("금액")) income = true;
+            else if (k.contains("지출") && k.contains("금액")) expense = true;
+            if (k.contains("잔액")) balance = true;
+        }
+        if (!(income && expense && balance)) return false;
+        int monthSheets = 0;
+        for (int i = 0; i < wb.getNumberOfSheets(); i++) {
+            if (monthOfSheetName(wb.getSheetName(i)) > 0) monthSheets++;
+        }
+        return monthSheets >= 2;
+    }
+
+    private static final Pattern MONTH_IN_NAME = Pattern.compile("(\\d{1,2})\\s*월");
+    private int monthOfSheetName(String name) {
+        if (name == null) return -1;
+        Matcher m = MONTH_IN_NAME.matcher(name);
+        if (m.find()) { int v = Integer.parseInt(m.group(1)); if (v >= 1 && v <= 12) return v; }
+        return -1;
+    }
+
+    /** 정규화된 날짜("yy/mm/dd"·"yyyy.mm.dd"·"9월" 등)에서 월(1~12)을 추출. 못 찾으면 -1. */
+    private static final Pattern DATE_MONTH = Pattern.compile("\\d{2,4}[./-](\\d{1,2})[./-]\\d{1,2}");
+    private int parseMonth(String date) {
+        if (date == null || date.isBlank()) return -1;
+        Matcher m = DATE_MONTH.matcher(date.trim());
+        if (m.find()) { int v = Integer.parseInt(m.group(1)); if (v >= 1 && v <= 12) return v; }
+        m = MONTH_IN_NAME.matcher(date);
+        if (m.find()) { int v = Integer.parseInt(m.group(1)); if (v >= 1 && v <= 12) return v; }
+        return -1;
+    }
+
+    private Sheet findMonthSheet(Workbook wb, int month) {
+        for (int i = 0; i < wb.getNumberOfSheets(); i++) {
+            if (monthOfSheetName(wb.getSheetName(i)) == month) return wb.getSheetAt(i);
+        }
+        return null;
+    }
+
+    /** allFields에서 키워드(부분일치)에 맞는 필드 값을 행 토큰 리스트로 분리. */
+    private List<String> ledgerTokens(Map<String, String> allFields, String... keywords) {
+        for (Map.Entry<String, String> e : allFields.entrySet()) {
+            for (String kw : keywords) {
+                if (e.getKey().contains(kw)) return splitMultiRowValue(e.getValue());
+            }
+        }
+        return Collections.emptyList();
+    }
+
+    private List<String> ledgerAmountTokens(Map<String, String> allFields, boolean income) {
+        for (Map.Entry<String, String> e : allFields.entrySet()) {
+            String k = e.getKey();
+            if (income && k.contains("수입") && k.contains("금액")) return splitMultiRowValue(e.getValue());
+            if (!income && k.contains("지출") && k.contains("금액")) return splitMultiRowValue(e.getValue());
+        }
+        return Collections.emptyList();
+    }
+
+    private static String at(List<String> list, int i) {
+        return (i >= 0 && i < list.size()) ? list.get(i) : "";
+    }
+
+    /**
+     * 원장 채우기: 통장 거래내역(행별 다중값) 컬럼을 거래 단위로 합쳐 날짜의 '월'에 맞는 시트로 분산 기록한다.
+     * 금액은 숫자로 채워 합계(SUM)가 계산되게 하고, 번호는 1부터 순번을 재부여하며, 합계 행의 잔액 칸에는 마지막 잔액을 적는다.
+     */
+    private void fillLedger(Workbook wb, Map<String, String> allFields, Map<Short, CellStyle> cache) {
+        List<String> dates = ledgerTokens(allFields, "날짜", "일자");
+        List<String> contents = ledgerTokens(allFields, "내용", "적요");
+        List<String> incomes = ledgerAmountTokens(allFields, true);
+        List<String> expenses = ledgerAmountTokens(allFields, false);
+        List<String> balances = ledgerTokens(allFields, "잔액");
+        int n = Math.max(Math.max(dates.size(), balances.size()), Math.max(incomes.size(), expenses.size()));
+        n = Math.max(n, contents.size());
+        if (n == 0) return;
+
+        // 거래일의 월별로 행 인덱스를 모은다 (월 미상은 -1 그룹 → 첫 월 시트로 폴백)
+        Map<Integer, List<Integer>> byMonth = new java.util.LinkedHashMap<>();
+        for (int i = 0; i < n; i++) {
+            byMonth.computeIfAbsent(parseMonth(at(dates, i)), k -> new java.util.ArrayList<>()).add(i);
+        }
+        for (Map.Entry<Integer, List<Integer>> e : byMonth.entrySet()) {
+            int month = e.getKey();
+            Sheet sheet = (month > 0) ? findMonthSheet(wb, month) : null;
+            if (sheet == null) {
+                // 월 미상이거나 해당 월 시트가 없으면 첫 번째 월 시트에 기록
+                for (int i = 0; i < wb.getNumberOfSheets() && sheet == null; i++) {
+                    if (monthOfSheetName(wb.getSheetName(i)) > 0) sheet = wb.getSheetAt(i);
+                }
+            }
+            if (sheet == null) continue;
+            fillLedgerSheet(wb, sheet, e.getValue(), dates, contents, incomes, expenses, balances, cache);
+        }
+        wb.setForceFormulaRecalculation(true); // 열어보면 합계·수식이 재계산되도록
+    }
+
+    private void fillLedgerSheet(Workbook wb, Sheet sheet, List<Integer> rowIdxs,
+                                 List<String> dates, List<String> contents, List<String> incomes,
+                                 List<String> expenses, List<String> balances, Map<Short, CellStyle> cache) {
+        // 헤더 행/열 탐색 (수입금액·지출금액·잔액이 모두 있는 행)
+        int headerRow = -1, colNo = -1, colDate = -1, colContent = -1, colIncome = -1, colExpense = -1, colBalance = -1;
+        int lastRow = sheet.getLastRowNum();
+        for (int r = 0; r <= lastRow; r++) {
+            Row row = sheet.getRow(r);
+            if (row == null) continue;
+            int no = -1, date = -1, content = -1, income = -1, expense = -1, balance = -1;
+            for (int c = 0; c < row.getLastCellNum(); c++) {
+                Cell cell = row.getCell(c);
+                if (cell == null || cell.getCellType() != CellType.STRING) continue;
+                String t = normalize(cell.getStringCellValue()).replace(" ", "");
+                if (t.equals("번호")) no = c;
+                else if (t.startsWith("날짜") || t.startsWith("일자")) date = c;
+                else if (t.startsWith("내용") || t.startsWith("적요")) content = c;
+                else if (t.startsWith("수입금액")) income = c;
+                else if (t.startsWith("지출금액")) expense = c;
+                else if (t.equals("잔액")) balance = c;
+            }
+            if (income >= 0 && expense >= 0 && balance >= 0) {
+                headerRow = r; colNo = no; colDate = date; colContent = content;
+                colIncome = income; colExpense = expense; colBalance = balance;
+                break;
+            }
+        }
+        if (headerRow < 0) return;
+
+        int startRow = headerRow + 1;
+        int count = rowIdxs.size();
+        int sumRowIdx = findSumRowIndex(sheet, startRow);
+
+        // 데이터가 합계 행 위 칸을 초과하면 합계 행 앞에 행을 삽입(성장)
+        if (sumRowIdx >= 0) {
+            int capacity = sumRowIdx - startRow;
+            if (capacity > 0 && count > capacity) {
+                int extra = count - capacity;
+                try {
+                    int templateRow = sumRowIdx - 1;
+                    sheet.shiftRows(sumRowIdx, sheet.getLastRowNum(), extra, true, true);
+                    for (int r = 0; r < extra; r++) copyRowLayout(sheet, templateRow, sumRowIdx + r);
+                    int newSum = sumRowIdx + extra;
+                    extendSumFormulas(sheet, newSum, sumRowIdx - 1, newSum - 1);
+                    sumRowIdx = newSum;
+                } catch (Exception ex) {
+                    log.warn("원장 행 확장 실패, 칸까지만 채움: {}", ex.getMessage());
+                    count = Math.min(count, capacity);
+                }
+            }
+        }
+
+        // 데이터 채우기 — 번호는 1부터 순번 재부여, 금액·잔액은 숫자로(합계 계산)
+        String lastBalance = null;
+        for (int k = 0; k < count; k++) {
+            int gi = rowIdxs.get(k);
+            Row tr = sheet.getRow(startRow + k);
+            if (tr == null) tr = sheet.createRow(startRow + k);
+            if (colNo >= 0) setLedgerCell(wb, tr, colNo, String.valueOf(k + 1), true, cache);
+            if (colDate >= 0) setLedgerCell(wb, tr, colDate, at(dates, gi), false, cache);
+            if (colContent >= 0) setLedgerCell(wb, tr, colContent, at(contents, gi), false, cache);
+            if (colIncome >= 0) setLedgerCell(wb, tr, colIncome, at(incomes, gi), true, cache);
+            if (colExpense >= 0) setLedgerCell(wb, tr, colExpense, at(expenses, gi), true, cache);
+            if (colBalance >= 0) {
+                String bal = at(balances, gi);
+                setLedgerCell(wb, tr, colBalance, bal, true, cache);
+                if (bal != null && !bal.replace(",", "").trim().isEmpty()) lastBalance = bal;
+            }
+        }
+
+        // 합계 행의 잔액 칸("(최종 잔액)")에 마지막 잔액 기록 (수입/지출 합계 칸의 SUM 수식은 그대로 둠)
+        if (sumRowIdx >= 0 && colBalance >= 0 && lastBalance != null) {
+            Row sumRow = sheet.getRow(sumRowIdx);
+            if (sumRow != null) {
+                Cell c = sumRow.getCell(colBalance);
+                if (c == null) c = sumRow.createCell(colBalance);
+                setLedgerCell(wb, sumRow, colBalance, lastBalance, true, cache);
+            }
+        }
+    }
+
+    /** 원장 셀 채우기: numeric이면 숫자로(합계 계산 가능), 아니면 텍스트로. 가운데 정렬 적용. */
+    private void setLedgerCell(Workbook wb, Row row, int col, String token, boolean numeric, Map<Short, CellStyle> cache) {
+        Cell c = row.getCell(col);
+        if (c == null) c = row.createCell(col);
+        String t = (token == null) ? "" : token.trim();
+        if (numeric) {
+            String digits = t.replace(",", "");
+            if (digits.isEmpty()) c.setCellValue(0);
+            else {
+                try { c.setCellValue(Double.parseDouble(digits)); }
+                catch (NumberFormatException e) { c.setCellValue(t); }
+            }
+        } else {
+            c.setCellValue(t);
+        }
+        applyCenter(wb, c, cache);
     }
 
     /**
