@@ -673,6 +673,11 @@ public class EvidenceService {
         if (recipientName != null && !recipientName.isBlank()) {
             allFields.put(FormFillService.RECIPIENT_SIGN_KEY, recipientName.trim());
         }
+        // 검토자/회장 서명란("회장 (인)", "검토자 : (인)")에 회장 직급 멤버 이름을 채운다. (#4)
+        String reviewerName = resolveRolePersonField("회장", group);
+        if (reviewerName != null && !reviewerName.isBlank()) {
+            allFields.put(FormFillService.REVIEWER_SIGN_KEY, reviewerName.trim());
+        }
     }
 
     /** allFields에서 수령인 성명/이름 값을 찾는다(학생증에서 채워진 값). */
@@ -789,11 +794,19 @@ public class EvidenceService {
             }
         }
         // 회장/검토자 등 나머지 → 회장 역할 멤버 (부회장 제외)
-        return members.stream()
+        String byRoleName = members.stream()
                 .filter(m -> m.getRole() != null
                         && m.getRole().getRoleName().contains("회장")
                         && !m.getRole().getRoleName().contains("부회장"))
                 .findFirst()
+                .map(m -> m.getUser().getName())
+                .orElse(null);
+        if (byRoleName != null) return byRoleName;
+        // 폴백: roleName이 "회장"과 정확히 일치하지 않아도 결재권(approval_order)이 가장 높은
+        //       멤버(=대표/회장)를 검토자로 사용한다.
+        return members.stream()
+                .filter(m -> m.getRole() != null && m.getRole().getApprovalOrder() != null)
+                .max(Comparator.comparingInt(m -> m.getRole().getApprovalOrder()))
                 .map(m -> m.getUser().getName())
                 .orElse(null);
     }

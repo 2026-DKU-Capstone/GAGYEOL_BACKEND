@@ -39,6 +39,7 @@ class EvidenceFillTest {
     @Mock EvidenceAiService evidenceAiService;
     @Mock FormAiService formAiService;
     @Mock FormFillService formFillService;
+    @Mock GroupMemberRepository groupMemberRepository;
 
     @InjectMocks EvidenceService evidenceService;
 
@@ -222,8 +223,8 @@ class EvidenceFillTest {
     }
 
     @Test
-    void fillFields_검토자_필드도_그룹등록정보로_채우고_영수증추출_제외() throws Exception {
-        // given — 그룹에 지출인 정보가 등록되어 있음
+    void fillFields_검토자는_회장직급_멤버이름으로_채우고_영수증추출_제외() throws Exception {
+        // given — 그룹에 회장 직급 멤버가 등록되어 있음 (#4)
         Path evidenceFile = tempDir.resolve("evidence5.pdf");
         Files.write(evidenceFile, "dummy".getBytes());
 
@@ -238,7 +239,13 @@ class EvidenceFillTest {
                 .group(group)
                 .build();
 
-        // "검토자"는 단독이면 이름, "검토자 소속"은 소속으로 채워진다
+        // 회장 직급 멤버("김회장")가 검토자로 채워진다
+        GroupMember president = GroupMember.builder()
+                .user(User.builder().name("김회장").build())
+                .role(GroupRole.builder().roleName("회장").approvalOrder(2).build())
+                .build();
+
+        // "검토자"는 회장 직급 멤버 이름, "검토자 소속"은 (지출인) 소속으로 채워진다
         Form form = Form.builder()
                 .formName("지출결의서")
                 .formFields("[\"검토자\",\"검토자 소속\",\"금액\"]")
@@ -247,6 +254,7 @@ class EvidenceFillTest {
 
         when(evidenceRepository.findById(5L)).thenReturn(Optional.of(evidence));
         when(formRepository.findById(50L)).thenReturn(Optional.of(form));
+        when(groupMemberRepository.findByGroup(group)).thenReturn(List.of(president));
         when(evidenceAiService.fillFormFields(any(), any(), eq(List.of("금액"))))
                 .thenReturn("{\"filled\":{\"금액\":\"50000\"},\"missing\":[]}");
 
@@ -256,9 +264,9 @@ class EvidenceFillTest {
         // when
         FillFieldsResponse response = evidenceService.fillFields(5L, request);
 
-        // then — 검토자도 그룹 등록 지출인 정보로 채워진다
+        // then — 검토자는 회장 직급 멤버 이름으로 채워진다
         FillFieldsResponse.FormFillResult result = response.getResults().get(0);
-        assertThat(result.getFilledFields()).containsEntry("검토자", "홍길동");
+        assertThat(result.getFilledFields()).containsEntry("검토자", "김회장");
         assertThat(result.getFilledFields()).containsEntry("검토자 소속", "소프트웨어학과");
         assertThat(result.getFilledFields()).containsEntry("금액", "50000");
         assertThat(result.getMissingFields()).isEmpty();
