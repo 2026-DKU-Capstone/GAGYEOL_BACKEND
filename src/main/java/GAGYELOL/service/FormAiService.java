@@ -63,8 +63,11 @@ public class FormAiService {
     /**
      * 사업명·증빙 OCR 결과를 바탕으로 특정 필드의 서술형 내용을 생성합니다.
      */
-    public String generateFieldContent(String businessName, String description, String fieldName,
+    public String generateFieldContent(String businessName, String itemName, String description, String fieldName,
                                        java.util.Map<String, String> filledFields) {
+        String itemLine = (itemName != null && !itemName.isBlank())
+                ? "지출 항목: " + itemName + "\n"
+                : "";
         String descLine = (description != null && !description.isBlank())
                 ? "사업 설명: " + description + "\n"
                 : "";
@@ -82,14 +85,18 @@ public class FormAiService {
 
         String prompt = String.format("""
                 사업명: %s
-                %s%s위 사업의 공문서 양식에서 '%s' 항목에 들어갈 내용을 작성해주세요.
+                %s%s%s위 사업의 공문서 양식에서 '%s' 항목에 들어갈 내용을 작성해주세요.
                 이미 파악된 항목(품목, 금액, 날짜 등)을 반영해 구체적으로 작성하세요.
-                간결하고 공식적인 문체로 2문장 이내, 공백 포함 %d자 이내로 작성하세요.
+                반드시 '-습니다' 체로, 간결하고 공식적인 문체로 2문장 이내, 공백 포함 %d자 이내로 작성하세요.
                 내용만 반환하고, 다른 설명은 붙이지 마세요.
-                """, businessName, descLine, contextLine, fieldName, MAX_CONTENT_LEN);
 
-        log.info("LLM 필드 생성 요청 - businessName={}, field={}, contextFields={}", businessName, fieldName,
-                filledFields != null ? filledFields.keySet() : "없음");
+                [예시]
+                입력: 사업명=2024년 봄 MT, 지출 항목=버스 대여비, 금액=150,000원
+                출력: 2024년 봄 MT 행사 참석을 위한 버스 대여 비용으로 지출하였습니다.
+                """, businessName, itemLine, descLine, contextLine, fieldName, MAX_CONTENT_LEN);
+
+        log.info("LLM 필드 생성 요청 - businessName={}, itemName={}, field={}, contextFields={}",
+                businessName, itemName, fieldName, filledFields != null ? filledFields.keySet() : "없음");
         return limitLength(openAiClient.chat(prompt, false, 0.7), MAX_CONTENT_LEN);
     }
 

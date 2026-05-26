@@ -148,7 +148,7 @@ public class EvidenceService {
     }
 
     public EvidenceAnalysisResponse analyze(MultipartFile file, Long userId, Long groupId,
-                                            String businessName, MultipartFile recipientImage) {
+                                            String businessName, String itemName, MultipartFile recipientImage) {
         User user = userRepository.findById(userId)
                 .orElseThrow(() -> new IllegalArgumentException("사용자를 찾을 수 없습니다."));
         UserGroup group = groupId != null
@@ -185,7 +185,7 @@ public class EvidenceService {
         String paymentType = evidenceAiService.classifyPaymentType(fileBytes, mimeType);
         log.info("결제 유형 분류 결과: {}", paymentType);
 
-        // 4. 증빙서류 저장 (사업명 + 수령인 사진 경로 포함)
+        // 4. 증빙서류 저장 (사업명 + 지출항목 + 수령인 사진 경로 포함)
         Evidence evidence = evidenceRepository.save(Evidence.builder()
                 .user(user)
                 .group(group)
@@ -194,6 +194,7 @@ public class EvidenceService {
                 .fileName(fileName)
                 .extractedText("")
                 .businessName(businessName)
+                .itemName(itemName)
                 .recipientImagePath(recipientImagePath)
                 .build());
 
@@ -429,10 +430,11 @@ public class EvidenceService {
             }
 
             // [경로 2] generatedFields → OCR 결과 포함해 LLM 생성
+            String itemName = evidence.getItemName();
             for (String field : generatedFieldsList) {
                 if (businessName != null && !businessName.isBlank()) {
                     String groupDescription = (group != null) ? group.getDescription() : null;
-                    String content = formAiService.generateFieldContent(businessName, groupDescription, field, filledFields);
+                    String content = formAiService.generateFieldContent(businessName, itemName, groupDescription, field, filledFields);
                     filledFields.put(field, content);
                     log.info("LLM 생성 필드: {} = {}", field, content);
                 } else {
