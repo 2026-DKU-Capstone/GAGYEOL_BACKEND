@@ -35,10 +35,12 @@ public class FormFillService {
     public static final String PAYER_SIGN_KEY = "__PAYER_SIGN__";
     /** 수령인 서명란("수령인 : (인)")에 채울 이름(학생증에서 추출한 수령인). */
     public static final String RECIPIENT_SIGN_KEY = "__RECIPIENT_SIGN__";
+    /** 검토자/회장 서명란("회장 (인)", "검토자 : (인)")에 채울 이름(그룹의 회장 직급 멤버). (#4) */
+    public static final String REVIEWER_SIGN_KEY = "__REVIEWER_SIGN__";
 
     /** fill()에서 일반 필드 루프 전에 분리해 별도 패스로 처리하는 예약 키 목록. */
     private static final List<String> RESERVED_KEYS =
-            List.of(ORG_TITLE_KEY, TODAY_DATE_KEY, PAYER_SIGN_KEY, RECIPIENT_SIGN_KEY);
+            List.of(ORG_TITLE_KEY, TODAY_DATE_KEY, PAYER_SIGN_KEY, RECIPIENT_SIGN_KEY, REVIEWER_SIGN_KEY);
 
     /** 양식에 박혀 있는 단체명 자리표시자: "00대학 00학과(부) 00전공 학생회" 류(00/OO/○○ 등 허용)를 통째로 매칭. */
     private static final java.util.regex.Pattern ORG_PLACEHOLDER =
@@ -52,6 +54,12 @@ public class FormFillService {
     /** "수령인 : (인)" 서명란. */
     private static final java.util.regex.Pattern SIGN_RECIPIENT =
             java.util.regex.Pattern.compile("수령인\\s*[:：]\\s*\\(\\s*인\\s*\\)");
+    /** 본문 "회장 (인)" 서명란(부회장 제외). */
+    private static final java.util.regex.Pattern SIGN_PRESIDENT =
+            java.util.regex.Pattern.compile("(?<!부)회장\\s*\\(\\s*인\\s*\\)");
+    /** "검토자 : (인)" 서명란. */
+    private static final java.util.regex.Pattern SIGN_REVIEWER =
+            java.util.regex.Pattern.compile("검토자\\s*[:：]\\s*\\(\\s*인\\s*\\)");
 
     /**
      * 파일 확장자에 따라 DOCX 또는 XLSX 채우기를 호출합니다.
@@ -195,6 +203,9 @@ public class FormFillService {
             // 자리표시자 교체: 단체명("00대학 …학생회") · 오늘 날짜("0000년 00월 00일") · 지출인/수령인 서명
             applyTemplateReplacements(doc, reserved);
 
+            // 양식에 박혀 있던 불필요한 빈 줄(연속/말미 빈 단락)을 정리해 큰 빈 공간을 줄인다. (#2)
+            collapseBlankParagraphs(doc);
+
             ByteArrayOutputStream out = new ByteArrayOutputStream();
             doc.write(out);
             return out.toByteArray();
@@ -269,6 +280,12 @@ public class FormFillService {
         String recipient = reserved.get(RECIPIENT_SIGN_KEY);
         if (recipient != null && !recipient.isBlank()) {
             text = SIGN_RECIPIENT.matcher(text).replaceAll(java.util.regex.Matcher.quoteReplacement("수령인 : " + recipient + " (인)"));
+        }
+        String reviewer = reserved.get(REVIEWER_SIGN_KEY);
+        if (reviewer != null && !reviewer.isBlank()) {
+            // 본문 "회장 (인)" → "회장 {이름} (인)", 표 "검토자 : (인)" → "검토자 : {이름} (인)" (#4)
+            text = SIGN_PRESIDENT.matcher(text).replaceAll(java.util.regex.Matcher.quoteReplacement("회장 " + reviewer + " (인)"));
+            text = SIGN_REVIEWER.matcher(text).replaceAll(java.util.regex.Matcher.quoteReplacement("검토자 : " + reviewer + " (인)"));
         }
         return text;
     }
@@ -375,6 +392,11 @@ public class FormFillService {
                 || normalizedField.contains("학생증") || normalizedField.contains("영수증");
     }
 
+    /** 양식 칸 이미지 최대 너비(EMU). 셀이 너무 넓어도 이 이상 키우지 않음. */
+    private static final int MAX_IMG_WIDTH_EMU = 16 * 360000;   // 16cm
+    /** 양식 칸 이미지 최대 높이(EMU). A4 1페이지를 넘기지 않도록 제한(행 높이와 무관). */
+    private static final int MAX_IMG_HEIGHT_EMU = 8 * 360000;   // 8cm (1페이지 유지: 학생증+영수증 나란히 들어가도 넘침 방지)
+
     private boolean addPictureToCell(XWPFTableCell cell, String fieldName, byte[] imageBytes,
                                       int docxPicType) {
         try {
@@ -383,9 +405,12 @@ public class FormFillService {
             para.setAlignment(ParagraphAlignment.CENTER);
             XWPFRun run = para.createRun();
             int[] box = getCellDimensionsEmu(cell);
-            // 셀 박스 안에 원본 비율을 유지하며 최대한 크게 (테두리에 닿지 않도록 약간의 여백)
-            int boxWpx = Math.max(1, (int) Math.round(box[0] / (double) Units.EMU_PER_PIXEL * 0.95));
-            int boxHpx = Math.max(1, (int) Math.round(box[1] / (double) Units.EMU_PER_PIXEL * 0.95));
+            // 너비는 셀 너비 기준(상한 MAX_IMG_WIDTH). 높이는 행 높이가 불안정하므로(짧은 행이면
+            // 0.9cm로 쪼그라들고, 큰 이미지는 행을 늘려 페이지를 넘김) 행 높이 대신 상한(MAX_IMG_HEIGHT)으로
+            // 제한한다. 박스 안에서 원본 비율을 유지하며 최대 크기로 맞춤.
+            int widthEmu = Math.min(box[0], MAX_IMG_WIDTH_EMU);
+            int boxWpx = Math.max(1, (int) Math.round(widthEmu / (double) Units.EMU_PER_PIXEL * 0.95));
+            int boxHpx = Math.max(1, (int) Math.round(MAX_IMG_HEIGHT_EMU / (double) Units.EMU_PER_PIXEL));
             int[] dims = fitDimensionsEmu(imageBytes, boxWpx, boxHpx);
             try (ByteArrayInputStream imgStream = new ByteArrayInputStream(imageBytes)) {
                 run.addPicture(imgStream, docxPicType, fieldName, dims[0], dims[1]);
@@ -465,12 +490,55 @@ public class FormFillService {
         return 1;
     }
 
-    /** 셀의 모든 단락에서 run(텍스트)을 제거한다. 단락 구조는 유지하고 첫 단락을 이미지용으로 재사용한다. (#5) */
+    /**
+     * 이미지 삽입을 위해 셀을 비운다: 첫 단락만 남기고 나머지 단락을 제거한 뒤 첫 단락의 run(텍스트)을 지운다.
+     * 양식 셀에 넣어둔 여러 빈 단락(줄바꿈)이 사진 아래 큰 빈 공간으로 남는 문제를 막는다. (#2)
+     */
     private void clearCellContent(XWPFTableCell cell) {
+        // 첫 단락만 남기고 나머지(빈 줄 포함) 단락 제거 — 셀은 최소 1개 단락이 필요하므로 index 0은 유지
+        for (int i = cell.getParagraphs().size() - 1; i >= 1; i--) {
+            cell.removeParagraph(i);
+        }
         for (XWPFParagraph para : cell.getParagraphs()) {
             for (int i = para.getRuns().size() - 1; i >= 0; i--) {
                 para.removeRun(i);
             }
+        }
+    }
+
+    /**
+     * DOCX 표 셀의 과도한 빈 단락을 정리한다: 연속된 빈 단락은 1개로 줄이고, 셀 끝(마지막 내용 이후)의
+     * 빈 단락은 모두 제거한다. 양식에 박혀 있던 줄바꿈 때문에 사진/문구 아래 큰 빈 공간이 생기는 것을 막는다. (#2)
+     */
+    private void collapseBlankParagraphs(XWPFDocument doc) {
+        for (XWPFTable t : doc.getTables()) {
+            for (XWPFTableRow r : t.getRows()) {
+                for (XWPFTableCell c : r.getTableCells()) {
+                    collapseCellBlanks(c);
+                }
+            }
+        }
+    }
+
+    private void collapseCellBlanks(XWPFTableCell cell) {
+        List<XWPFParagraph> paras = cell.getParagraphs();
+        java.util.List<Integer> toRemove = new java.util.ArrayList<>();
+        boolean prevBlank = false;
+        int lastNonBlank = -1;
+        for (int i = 0; i < paras.size(); i++) {
+            boolean blank = paras.get(i).getText().trim().isEmpty();
+            if (blank && prevBlank) toRemove.add(i);   // 연속 빈 단락 → 1개로
+            if (!blank) lastNonBlank = i;
+            prevBlank = blank;
+        }
+        // 마지막 내용 단락 이후의 빈 단락(말미 여백)은 모두 제거 (셀에는 단락 1개를 남긴다)
+        for (int i = paras.size() - 1; i > lastNonBlank && i >= 1; i--) {
+            if (!toRemove.contains(i)) toRemove.add(i);
+        }
+        toRemove.sort(java.util.Collections.reverseOrder());
+        for (int idx : toRemove) {
+            if (cell.getParagraphs().size() <= 1) break;
+            cell.removeParagraph(idx);
         }
     }
 
@@ -542,10 +610,12 @@ public class FormFillService {
     private boolean fillInline(XWPFTableCell cell, String rawCellText, String normalizedField, String value) {
         String trimmed = rawCellText.trim();
 
+        // 패턴 1: "레이블 :   (인)" — 콜론 바로 앞 라벨이 이 필드일 때만.
+        // (맺음말 "위의 내용과 같이…지출인 : (인)"처럼 문장 속에 필드명이 부분 포함된 셀은 채우지 않음)
         if (trimmed.contains(":") && trimmed.contains("(인)")) {
             int colonIdx = trimmed.indexOf(":");
             int inIdx = trimmed.indexOf("(인)");
-            if (colonIdx < inIdx) {
+            if (colonIdx < inIdx && labelMatchesField(trimmed.substring(0, colonIdx), normalizedField)) {
                 String beforeColon = trimmed.substring(0, colonIdx + 1);
                 String inPart = trimmed.substring(inIdx);
                 setCellText(cell, beforeColon + " " + value + "  " + inPart);
@@ -553,27 +623,37 @@ public class FormFillService {
             }
         }
 
-        if (trimmed.endsWith(":")) {
+        // 패턴 2: "레이블 :" — 콜론 앞 라벨이 이 필드일 때만
+        if (trimmed.endsWith(":") && labelMatchesField(trimmed.substring(0, trimmed.length() - 1), normalizedField)) {
             setCellText(cell, trimmed + " " + value);
             return true;
         }
 
+        // 패턴 3: 셀 텍스트 = 필드명 → 값으로 교체
         if (normalize(trimmed).equals(normalizedField)) {
             clearCellText(cell, value);
             return true;
         }
 
-        // 패턴 4: "[회장       (인)]" 형태 — 콜론 없이 (인)만 있는 경우
-        // 필드명 뒤 공백에 이름을 삽입 → "[회장 값  (인)]"
-        if (trimmed.contains("(인)") && normalize(trimmed).contains(normalizedField)) {
+        // 패턴 4: "[회장       (인)]" 형태 — 콜론 없이 (인)만 있는 경우.
+        // (인) 바로 앞 라벨이 이 필드일 때만 채운다.
+        if (trimmed.contains("(인)")) {
             int inIdx = trimmed.indexOf("(인)");
-            String beforeIn = trimmed.substring(0, inIdx).stripTrailing();
-            String afterIn = trimmed.substring(inIdx);
-            setCellText(cell, beforeIn + " " + value + "  " + afterIn);
-            return true;
+            if (labelMatchesField(trimmed.substring(0, inIdx), normalizedField)) {
+                String beforeIn = trimmed.substring(0, inIdx).stripTrailing();
+                String afterIn = trimmed.substring(inIdx);
+                setCellText(cell, beforeIn + " " + value + "  " + afterIn);
+                return true;
+            }
         }
 
         return false;
+    }
+
+    /** 콜론/(인) 바로 앞 텍스트가 이 필드를 '라벨'로 갖는지 — 끝부분이 필드명과 일치할 때만 true.
+     *  문장 속에 필드명이 부분 포함된 경우(예: "…위의 내용과 같이…지출인" vs 필드 "내용")를 걸러낸다. */
+    private boolean labelMatchesField(String beforeMarker, String normalizedField) {
+        return normalize(beforeMarker).endsWith(normalizedField);
     }
 
     // 셀의 모든 단락·run을 비우고 첫 run에만 값을 씀 (여러 단락으로 된 레이블 셀 교체용)
@@ -613,7 +693,14 @@ public class FormFillService {
                 para.createRun().setText(value);
             } else {
                 para.getRuns().get(0).setText(value, 0);
+                // 첫 run 외 나머지 run은 비운다 — 여러 run으로 쪼개진 기존 텍스트가 잔류해 중복되는 것 방지
+                for (int j = para.getRuns().size() - 1; j >= 1; j--) para.removeRun(j);
             }
+        }
+        // 같은 셀의 나머지 단락에 남은 텍스트도 제거 (중복 방지)
+        for (int p = 1; p < cell.getParagraphs().size(); p++) {
+            XWPFParagraph extra = cell.getParagraphs().get(p);
+            for (int j = extra.getRuns().size() - 1; j >= 0; j--) extra.removeRun(j);
         }
         para.setAlignment(ParagraphAlignment.CENTER); // 값 수평 가운데 (#6)
     }
@@ -699,9 +786,42 @@ public class FormFillService {
      * 같은 양식 시트를 복제해 다음 양식지(시트)로 이어 쓴다.
      * 같은 시트·헤더의 여러 컬럼은 동일한 페이지 경계로 함께 분할된다.
      */
+    /**
+     * 시트의 '구조'(필드 라벨 셀 + 합계 표식 셀)만으로 서명을 만든다.
+     * 월별 12개 복제 시트처럼 데이터/월 라벨("3월" 등)만 다르고 양식 골격이 같은 시트를
+     * 같은 것으로 인식해 중복 제거(첫 시트에만 채움)하기 위함. 전체 내용 비교가 아니라
+     * 라벨 위치+텍스트만 쓰므로 월 표기가 달라도 동일 서명이 된다.
+     */
+    private String sheetSignature(Sheet sheet, java.util.Set<String> fieldNames) {
+        // 위치는 무시하고 '라벨 텍스트 집합'만 사용 → 합계 행 위치나 월 표기가 조금씩 달라도
+        // 동일 양식이면 같은 서명이 된다. (헤더/합계는 상단부에 있으므로 앞쪽 행만 스캔)
+        java.util.TreeSet<String> labels = new java.util.TreeSet<>();
+        int last = Math.min(sheet.getLastRowNum(), 200);
+        for (int r = 0; r <= last; r++) {
+            Row row = sheet.getRow(r);
+            if (row == null) continue;
+            short lc = row.getLastCellNum();
+            for (int c = 0; c < lc; c++) {
+                Cell cell = row.getCell(c);
+                if (cell == null || cell.getCellType() != CellType.STRING) continue;
+                String v = cell.getStringCellValue();
+                if (v == null || v.isBlank()) continue;
+                String nv = normalize(v);
+                boolean structural = nv.contains("합계") || nv.contains("소계") || nv.contains("총계") || nv.contains("총액");
+                if (!structural) {
+                    for (String f : fieldNames) {
+                        if (f != null && !f.isBlank() && nv.contains(normalize(f))) { structural = true; break; }
+                    }
+                }
+                if (structural) labels.add(nv);
+            }
+        }
+        return String.join("|", labels);
+    }
+
     private void applyMultiRowFills(Workbook workbook, List<MultiRowFill> fills, Map<Short, CellStyle> cache) {
         if (fills.isEmpty()) return;
-        // (시트, 헤더 행)별 그룹 — 한 표의 여러 컬럼을 같은 페이지 경계로 함께 분할
+        // (시트, 헤더 행)별 그룹 — 한 표의 여러 컬럼을 함께 처리
         Map<String, List<MultiRowFill>> groups = new java.util.LinkedHashMap<>();
         for (MultiRowFill f : fills) {
             groups.computeIfAbsent(f.sheetIndex + ":" + f.headerRow, k -> new java.util.ArrayList<>()).add(f);
@@ -709,49 +829,112 @@ public class FormFillService {
 
         for (List<MultiRowFill> group : groups.values()) {
             MultiRowFill any = group.get(0);
-            Sheet origSheet = workbook.getSheetAt(any.sheetIndex);
+            Sheet sheet = workbook.getSheetAt(any.sheetIndex);
             int startRow = any.headerRow + 1;
-            int sumRowIdx = findSumRowIndex(origSheet, startRow);
-            int capacity = (sumRowIdx >= 0) ? (sumRowIdx - startRow) : Integer.MAX_VALUE;
-            if (capacity <= 0) {
-                log.warn("XLSX 표 채우기: 합계 행 바로 위에 빈 칸이 없어 건너뜀 (headerRow={})", any.headerRow);
-                continue;
-            }
-
             int maxTokens = 0;
             for (MultiRowFill f : group) maxTokens = Math.max(maxTokens, f.values.size());
-            int pages = (capacity == Integer.MAX_VALUE) ? 1 : (int) Math.ceil((double) maxTokens / capacity);
+            if (maxTokens == 0) continue;
 
-            // 페이지 시트 준비: page0 = 원본, 추가 페이지는 데이터 쓰기 전의 깨끗한 원본 복제본
-            List<Sheet> pageSheets = new java.util.ArrayList<>();
-            pageSheets.add(origSheet);
-            int origIdx = workbook.getSheetIndex(origSheet);
-            for (int p = 1; p < pages; p++) {
-                pageSheets.add(workbook.cloneSheet(origIdx));
-            }
+            int sumRowIdx = findSumRowIndex(sheet, startRow);
 
-            for (int p = 0; p < pages; p++) {
-                Sheet target = pageSheets.get(p);
-                for (MultiRowFill f : group) {
-                    for (int k = 0; k < capacity; k++) {
-                        int tokenIdx = p * capacity + k;
-                        if (tokenIdx >= f.values.size()) break;
-                        String v = f.values.get(tokenIdx);
-                        if (v.isEmpty()) continue; // 누락 행 보존 → 행 정렬 유지
-                        Row tr = target.getRow(startRow + k);
-                        if (tr == null) tr = target.createRow(startRow + k);
-                        Cell tc = tr.getCell(f.col);
-                        if (tc == null) tc = tr.createCell(f.col);
-                        else if (tc.getCellType() != CellType.BLANK) continue; // 기존 데이터/수식 보존
-                        tc.setCellValue(v);
-                        applyCenter(workbook, tc, cache);
+            // 합계 행이 있고 데이터가 그 위 칸을 초과하면, 시트를 복제하지 않고
+            // 합계 행 바로 앞에 부족분만큼 행을 삽입(성장)해 한 시트에 모두 채운다.
+            // (합계 행은 데이터 끝으로 밀려 내려가고, 합계 SUM 범위도 새 마지막 데이터 행까지 확장)
+            if (sumRowIdx >= 0) {
+                int capacity = sumRowIdx - startRow;
+                if (capacity <= 0) {
+                    log.warn("XLSX 표 채우기: 합계 행 바로 위에 빈 칸이 없어 건너뜀 (headerRow={})", any.headerRow);
+                    continue;
+                }
+                if (maxTokens > capacity) {
+                    int extra = maxTokens - capacity;
+                    try {
+                        int templateRow = sumRowIdx - 1; // 마지막 데이터 행 = 스타일·병합 템플릿
+                        sheet.shiftRows(sumRowIdx, sheet.getLastRowNum(), extra, true, true);
+                        for (int r = 0; r < extra; r++) {
+                            copyRowLayout(sheet, templateRow, sumRowIdx + r);
+                        }
+                        int newSumRow = sumRowIdx + extra;
+                        extendSumFormulas(sheet, newSumRow, sumRowIdx - 1, newSumRow - 1);
+                        log.info("XLSX 표가 칸({})을 초과 - 합계 행 앞에 {}행 삽입해 한 시트에 이어 작성", capacity, extra);
+                    } catch (Exception e) {
+                        log.warn("XLSX 행 확장 실패, 합계 칸까지만 채움: {}", e.getMessage());
+                        maxTokens = capacity; // 폴백: 넘침분은 버린다
                     }
                 }
             }
-            if (pages > 1) {
-                log.info("XLSX 표 데이터가 칸({})을 초과 - 양식 시트를 복제해 {}장으로 이어 작성", capacity, pages);
+
+            // 데이터 채우기 (startRow 부터 순서대로). 기존 데이터/수식 셀은 보존.
+            for (MultiRowFill f : group) {
+                for (int k = 0; k < maxTokens && k < f.values.size(); k++) {
+                    String v = f.values.get(k);
+                    if (v.isEmpty()) continue; // 누락 행 보존 → 행 정렬 유지
+                    Row tr = sheet.getRow(startRow + k);
+                    if (tr == null) tr = sheet.createRow(startRow + k);
+                    Cell tc = tr.getCell(f.col);
+                    if (tc == null) tc = tr.createCell(f.col);
+                    else if (tc.getCellType() != CellType.BLANK) continue; // 기존 데이터/수식 보존
+                    tc.setCellValue(v);
+                    applyCenter(workbook, tc, cache);
+                }
             }
         }
+    }
+
+    /** 템플릿 데이터 행의 셀 스타일·행 높이·가로 병합을 대상 행에 복제한다. (삽입한 새 행을 기존 표와 같게) */
+    private void copyRowLayout(Sheet sheet, int srcIdx, int dstIdx) {
+        Row src = sheet.getRow(srcIdx);
+        Row dst = sheet.getRow(dstIdx);
+        if (dst == null) dst = sheet.createRow(dstIdx);
+        if (src == null) return;
+        if (src.getHeight() > 0) dst.setHeight(src.getHeight());
+        short last = src.getLastCellNum();
+        for (int c = 0; c < last; c++) {
+            Cell sc = src.getCell(c);
+            if (sc == null) continue;
+            Cell dc = dst.getCell(c);
+            if (dc == null) dc = dst.createCell(c);
+            try { dc.setCellStyle(sc.getCellStyle()); } catch (Exception ignored) {}
+        }
+        java.util.List<org.apache.poi.ss.util.CellRangeAddress> toAdd = new java.util.ArrayList<>();
+        for (org.apache.poi.ss.util.CellRangeAddress m : sheet.getMergedRegions()) {
+            if (m.getFirstRow() == srcIdx && m.getLastRow() == srcIdx) {
+                toAdd.add(new org.apache.poi.ss.util.CellRangeAddress(dstIdx, dstIdx, m.getFirstColumn(), m.getLastColumn()));
+            }
+        }
+        for (org.apache.poi.ss.util.CellRangeAddress m : toAdd) {
+            try { sheet.addMergedRegion(m); } catch (Exception ignored) {}
+        }
+    }
+
+    /** 합계 행의 SUM 수식 범위 끝 행을, 행 삽입 후의 새 마지막 데이터 행까지 확장한다.
+     *  예) 데이터가 34행까지였고 N행 삽입했다면 SUM(M10:R34) → SUM(M10:R(34+N)). (행 인덱스는 0-based) */
+    private void extendSumFormulas(Sheet sheet, int sumRowIdx, int oldLastDataRow0, int newLastDataRow0) {
+        Row sumRow = sheet.getRow(sumRowIdx);
+        if (sumRow == null) return;
+        String oldR = String.valueOf(oldLastDataRow0 + 1); // 엑셀은 1-based
+        String newR = String.valueOf(newLastDataRow0 + 1);
+        if (oldR.equals(newR)) return;
+        Pattern endRef = Pattern.compile("(:\\$?[A-Z]{1,3}\\$?)" + oldR + "(?![0-9])");
+        for (Cell c : sumRow) {
+            if (c.getCellType() != CellType.FORMULA) continue;
+            String f = c.getCellFormula();
+            String nf = endRef.matcher(f).replaceAll("$1" + newR);
+            if (!nf.equals(f)) {
+                try { c.setCellFormula(nf); } catch (Exception ignored) {}
+            }
+        }
+    }
+
+    /**
+     * 셀이 해당 필드의 '열 머리글'인지 판별한다. 공백 제거 후 셀 텍스트가 필드명으로 시작하면 머리글로 본다. (#1)
+     * 예) 필드 "잔액": "잔액"·"잔액(원)"은 머리글(true), "이전 잔액"·"(최종 잔액)"은 아님(false).
+     * 다중행(표) 데이터를 엉뚱한 칸에 채워 양식이 깨지는 것을 막기 위해 단순 contains 대신 사용한다.
+     */
+    private boolean isColumnHeaderMatch(String cellText, String field) {
+        String c = normalize(cellText).replace(" ", "");
+        String f = normalize(field).replace(" ", "");
+        return !f.isEmpty() && c.startsWith(f);
     }
 
     private java.util.List<String> splitMultiRowValue(String value) {
@@ -782,10 +965,18 @@ public class FormFillService {
             Map<Short, CellStyle> centerStyleCache = new java.util.HashMap<>();
 
             // Phase 1: 단일 값은 즉시 채우고, 다중행(표) 데이터는 수집만 한다. (합계 행 처리·시트 분할은 Phase 2)
+            // 같은 구조가 반복되는 시트(예: 월별 12개 복제 시트)는 첫 시트에만 채운다.
+            // — 같은 데이터를 모든 시트에 중복으로 넣지 않고, 거대한 시트를 12배 cloneSheet 하다 OOM 나는 것을 막는다.
             List<MultiRowFill> multiRowFills = new java.util.ArrayList<>();
             int originalSheetCount = workbook.getNumberOfSheets();
+            java.util.Set<String> seenSheetSig = new java.util.HashSet<>();
             for (int si = 0; si < originalSheetCount; si++) {
                 Sheet sheet = workbook.getSheetAt(si);
+                String sig = sheetSignature(sheet, allFields.keySet());
+                if (!sig.isEmpty() && !seenSheetSig.add(sig)) {
+                    log.info("XLSX 동일 구조 중복 시트 건너뜀(첫 시트에만 채움): sheetIndex={}", si);
+                    continue;
+                }
                 // 인덱스 기반 순회: 다중행 채우기로 행을 새로 만들어도 원본 행 범위만 처리하고
                 // 이터레이터 ConcurrentModificationException을 피한다. (합계 등 헤더 아래 행이 있는 양식 대응)
                 int lastRowNum = sheet.getLastRowNum();
@@ -811,8 +1002,12 @@ public class FormFillService {
                                     : splitMultiRowValue(value);
 
                             if (rowValues.size() >= MULTIROW_MIN_PARTS) {
-                                // 표 데이터: 합계 행 처리·시트 분할을 위해 수집만 하고 Phase 2에서 채운다.
-                                multiRowFills.add(new MultiRowFill(si, row.getRowNum(), ci, rowValues));
+                                // 표(다중행) 데이터: 이 셀이 해당 필드의 '열 머리글'일 때만 수집한다.
+                                // "이전 잔액"·"(최종 잔액)"처럼 필드명("잔액")을 부분 포함하는 칸이 표 머리글로
+                                // 오인되어 제목/머리글 영역에 행이 삽입·오염되는 것을 막는다. (#1)
+                                if (isColumnHeaderMatch(cellText, field)) {
+                                    multiRowFills.add(new MultiRowFill(si, row.getRowNum(), ci, rowValues));
+                                }
                             } else {
                                 fillSingleValue(workbook, sheet, row, ci, value, centerStyleCache);
                                 log.debug("XLSX 필드 채우기(단일): {} = {}", field, value);

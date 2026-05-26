@@ -18,8 +18,8 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /**
- * #4 검증: 금액성 필드의 추출 스키마 description에 "음수 제거·절댓값·세부항목 합산 총합" 지침이 포함되고,
- * 비금액 필드에는 포함되지 않아야 한다.
+ * #3 검증: 금액성 필드의 추출 스키마 description에 "음수 제거·절댓값·영수증 최종 합계 금액 하나만" 지침이
+ * 포함되고, 비금액 필드에는 포함되지 않아야 한다.
  */
 @ExtendWith(MockitoExtension.class)
 class EvidenceAiServiceTest {
@@ -31,7 +31,7 @@ class EvidenceAiServiceTest {
     @Captor ArgumentCaptor<Map<String, Object>> schemaCaptor;
 
     @Test
-    void 금액성_필드는_절댓값_총합_지침이_스키마에_포함되고_비금액_필드는_제외된다() {
+    void 금액성_필드는_절댓값_최종합계_지침이_스키마에_포함되고_비금액_필드는_제외된다() {
         when(upstageIeClient.extract(any(), eq("image/png"), any()))
                 .thenReturn("{\"금액\":\"1000\",\"비고\":\"메모\"}");
 
@@ -47,9 +47,43 @@ class EvidenceAiServiceTest {
         Map<String, Object> note = (Map<String, Object>) props.get("비고");
 
         assertThat((String) amount.get("description"))
-                .contains("음수").contains("절댓값").contains("합산");
+                .contains("음수").contains("절댓값").contains("최종 합계").contains("하나만");
         assertThat((String) note.get("description"))
-                .doesNotContain("절댓값").doesNotContain("합산");
+                .doesNotContain("절댓값").doesNotContain("최종 합계");
+    }
+
+    @Test
+    void 원장_양식이면_각_열은_행별_다중값_매핑_지침이_적용된다() {
+        // 수입금액+지출금액+잔액이 모두 있는 원장(수입지출관리대장) 양식
+        when(upstageIeClient.extract(any(), eq("image/png"), any())).thenReturn("{}");
+
+        service.fillFormFields(new byte[]{1}, "image/png",
+                List.of("번호", "날짜", "내용", "수입금액", "지출금액", "잔액"));
+
+        verify(upstageIeClient).extract(any(), eq("image/png"), schemaCaptor.capture());
+        @SuppressWarnings("unchecked")
+        Map<String, Object> props = (Map<String, Object>) schemaCaptor.getValue().get("properties");
+
+        String income = (String) ((Map<?, ?>) props.get("수입금액")).get("description");
+        String expense = (String) ((Map<?, ?>) props.get("지출금액")).get("description");
+        // 열↔열 매핑 + 행별 다중값(콤마 나열, 합산 금지)
+        assertThat(income).contains("찾으신").contains("콤마").contains("합산하지");
+        assertThat(expense).contains("맡기신");
+        assertThat((String) ((Map<?, ?>) props.get("날짜")).get("description")).contains("콤마");
+    }
+
+    @Test
+    void 비원장_양식의_지출금액은_단일_최종합계로_추출된다() {
+        // "지출 금액"만 있고 수입금액/잔액이 없는 양식(지출기록부)은 원장이 아니므로 단일 금액
+        when(upstageIeClient.extract(any(), eq("image/png"), any())).thenReturn("{}");
+
+        service.fillFormFields(new byte[]{1}, "image/png", List.of("지출 금액", "내용"));
+
+        verify(upstageIeClient).extract(any(), eq("image/png"), schemaCaptor.capture());
+        @SuppressWarnings("unchecked")
+        Map<String, Object> props = (Map<String, Object>) schemaCaptor.getValue().get("properties");
+        String expense = (String) ((Map<?, ?>) props.get("지출 금액")).get("description");
+        assertThat(expense).contains("최종 합계").contains("하나만").doesNotContain("콤마");
     }
 
     @Test

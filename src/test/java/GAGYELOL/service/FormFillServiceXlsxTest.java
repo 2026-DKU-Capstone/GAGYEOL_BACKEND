@@ -153,12 +153,12 @@ class FormFillServiceXlsxTest {
     }
 
     /**
-     * 다중행 데이터가 표 칸 수를 초과하면 합계 행을 넘지 않고, 초과분은 양식 시트를 복제한
-     * 다음 시트(다음 양식지)로 이어 기록된다.
-     * 헤더(row0) 아래 데이터 칸은 row1~3 (합계는 row4) = 칸 3개. 값 5개 → 3개는 현재 시트, 2개는 복제 시트.
+     * 다중행 데이터가 표 칸 수를 초과하면 시트를 복제하지 않고, 합계 행 앞에 행을 삽입(성장)해
+     * 한 시트에 모두 채운다. 합계 행은 데이터 끝으로 밀려 내려간다.
+     * 헤더(row0) 아래 데이터 칸 row1~3 (합계 row4) = 칸 3개. 값 5개 → 2행 삽입, row1~5에 채우고 합계는 row6.
      */
     @Test
-    void 다중행은_합계행_위까지_채우고_초과분은_다음_시트로_복제된다() throws IOException {
+    void 다중행이_칸을_초과하면_같은_시트에_행을_늘려_채우고_합계는_끝으로_내려간다() throws IOException {
         Path tempFile = tempDir.resolve("form-with-sum.xlsx");
         try (XSSFWorkbook wb = new XSSFWorkbook()) {
             Sheet sheet = wb.createSheet("양식");
@@ -176,32 +176,26 @@ class FormFillServiceXlsxTest {
         byte[] result = service.fill(tempFile.toString(), fields);
 
         try (XSSFWorkbook out = new XSSFWorkbook(new ByteArrayInputStream(result))) {
-            // 칸을 초과해 두 번째 양식지(복제 시트)가 생겼다
-            assertThat(out.getNumberOfSheets()).isEqualTo(2);
+            assertThat(out.getNumberOfSheets()).as("새 시트를 만들지 않는다").isEqualTo(1);
 
-            Sheet page1 = out.getSheetAt(0);
-            assertThat(page1.getRow(1).getCell(0).getStringCellValue()).isEqualTo("1");
-            assertThat(page1.getRow(2).getCell(0).getStringCellValue()).isEqualTo("2");
-            assertThat(page1.getRow(3).getCell(0).getStringCellValue()).isEqualTo("3");
-            // 합계 행(row4)은 덮어쓰지 않고 라벨 유지, 그 아래로 새 행도 만들지 않음
-            assertThat(page1.getRow(4).getCell(0).getStringCellValue()).isEqualTo("합계");
-            assertThat(page1.getRow(5)).isNull();
-
-            // 두 번째 양식지: 헤더·합계 라벨이 복제되고 초과분 4,5가 들어간다
-            Sheet page2 = out.getSheetAt(1);
-            assertThat(page2.getRow(0).getCell(0).getStringCellValue()).isEqualTo("번호");
-            assertThat(page2.getRow(1).getCell(0).getStringCellValue()).isEqualTo("4");
-            assertThat(page2.getRow(2).getCell(0).getStringCellValue()).isEqualTo("5");
-            assertThat(page2.getRow(4).getCell(0).getStringCellValue()).isEqualTo("합계");
+            Sheet sheet = out.getSheetAt(0);
+            assertThat(sheet.getRow(1).getCell(0).getStringCellValue()).isEqualTo("1");
+            assertThat(sheet.getRow(2).getCell(0).getStringCellValue()).isEqualTo("2");
+            assertThat(sheet.getRow(3).getCell(0).getStringCellValue()).isEqualTo("3");
+            // 합계 행 앞에 2행이 삽입되어 4,5도 같은 시트에 들어간다
+            assertThat(sheet.getRow(4).getCell(0).getStringCellValue()).isEqualTo("4");
+            assertThat(sheet.getRow(5).getCell(0).getStringCellValue()).isEqualTo("5");
+            // 합계 행은 데이터 끝(row6)으로 밀려 내려간다
+            assertThat(sheet.getRow(6).getCell(0).getStringCellValue()).isEqualTo("합계");
         }
     }
 
     /**
-     * 구버전 바이너리 .xls(HSSF) 양식에서도 합계 행 경계·시트 분할(cloneSheet)이 깨지지 않아야 한다.
+     * 구버전 바이너리 .xls(HSSF) 양식에서도 행 삽입(성장) 경로가 깨지지 않고 파일이 유효해야 한다.
      * 지출 기록부처럼 표+합계 행이 있는 양식은 항상 이 경로를 타므로 .xls 다운로드 실패의 핵심 재현.
      */
     @Test
-    void xls_HSSF_합계행_양식도_초과분이_다음_시트로_복제되고_파일이_유효하다() throws IOException {
+    void xls_HSSF_칸_초과시_같은_시트에_행을_늘려_채우고_파일이_유효하다() throws IOException {
         Path tempFile = tempDir.resolve("form-with-sum.xls");
         try (HSSFWorkbook wb = new HSSFWorkbook()) {
             Sheet sheet = wb.createSheet("지출 기록부");
@@ -220,14 +214,11 @@ class FormFillServiceXlsxTest {
 
         // 결과 바이트가 정상 HSSF 파일로 다시 열려야 한다 (다운로드 가능 == 손상 없음)
         try (Workbook out = WorkbookFactory.create(new ByteArrayInputStream(result))) {
-            assertThat(out.getNumberOfSheets()).isEqualTo(2);
-            Sheet page1 = out.getSheetAt(0);
-            assertThat(page1.getRow(1).getCell(0).getStringCellValue()).isEqualTo("1");
-            assertThat(page1.getRow(3).getCell(0).getStringCellValue()).isEqualTo("3");
-            assertThat(page1.getRow(4).getCell(0).getStringCellValue()).isEqualTo("합계");
-            Sheet page2 = out.getSheetAt(1);
-            assertThat(page2.getRow(1).getCell(0).getStringCellValue()).isEqualTo("4");
-            assertThat(page2.getRow(2).getCell(0).getStringCellValue()).isEqualTo("5");
+            assertThat(out.getNumberOfSheets()).isEqualTo(1);
+            Sheet sheet = out.getSheetAt(0);
+            assertThat(sheet.getRow(1).getCell(0).getStringCellValue()).isEqualTo("1");
+            assertThat(sheet.getRow(5).getCell(0).getStringCellValue()).isEqualTo("5");
+            assertThat(sheet.getRow(6).getCell(0).getStringCellValue()).isEqualTo("합계");
         }
     }
 
@@ -254,6 +245,45 @@ class FormFillServiceXlsxTest {
         try (XSSFWorkbook out = new XSSFWorkbook(new ByteArrayInputStream(result))) {
             assertThat(out.getSheetAt(0).getRow(0).getCell(0).getStringCellValue())
                     .isEqualTo("단국대학 소프트웨어학과 학생회");
+        }
+    }
+
+    /**
+     * (#1) 필드명을 부분 포함하는 비-머리글 칸("이전 잔액", "(최종 잔액)")이 표 머리글로 오인되어
+     * 제목/머리글 영역에 행이 삽입·오염되던 버그 재현. 다중행 데이터는 정확한 머리글("잔액") 아래에만
+     * 채워져야 하고, "이전 잔액"·"(최종 잔액)" 칸과 합계는 그대로 보존되어야 한다.
+     */
+    @Test
+    void 다중행_데이터는_부분일치_칸이_아니라_정확한_머리글_아래에만_채워진다() throws IOException {
+        Path tempFile = tempDir.resolve("ledger.xlsx");
+        try (XSSFWorkbook wb = new XSSFWorkbook()) {
+            Sheet sheet = wb.createSheet("1월");
+            sheet.createRow(0).createCell(5).setCellValue("이전 잔액"); // 머리글 아님(부분 일치)
+            sheet.createRow(2).createCell(0).setCellValue("잔액");      // 진짜 열 머리글
+            // row 3~5 = 데이터 칸 (빈 행)
+            sheet.createRow(6).createCell(0).setCellValue("합계");
+            sheet.createRow(8).createCell(0).setCellValue("(최종 잔액)"); // 머리글 아님(부분 일치)
+            try (FileOutputStream fos = new FileOutputStream(tempFile.toFile())) {
+                wb.write(fos);
+            }
+        }
+
+        Map<String, String> fields = new LinkedHashMap<>();
+        fields.put("잔액", "1000, 2000, 3000");
+
+        byte[] result = service.fill(tempFile.toString(), fields);
+
+        try (XSSFWorkbook out = new XSSFWorkbook(new ByteArrayInputStream(result))) {
+            assertThat(out.getNumberOfSheets()).isEqualTo(1);
+            Sheet sheet = out.getSheetAt(0);
+            // "잔액" 머리글(row2 col0) 아래 row3~5에만 값이 들어간다
+            assertThat(sheet.getRow(3).getCell(0).getStringCellValue()).isEqualTo("1000");
+            assertThat(sheet.getRow(4).getCell(0).getStringCellValue()).isEqualTo("2000");
+            assertThat(sheet.getRow(5).getCell(0).getStringCellValue()).isEqualTo("3000");
+            // "이전 잔액"/"(최종 잔액)" 칸과 합계는 보존(오염 없음)
+            assertThat(sheet.getRow(0).getCell(5).getStringCellValue()).isEqualTo("이전 잔액");
+            assertThat(sheet.getRow(6).getCell(0).getStringCellValue()).isEqualTo("합계");
+            assertThat(sheet.getRow(8).getCell(0).getStringCellValue()).isEqualTo("(최종 잔액)");
         }
     }
 

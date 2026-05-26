@@ -148,7 +148,7 @@ public class EvidenceService {
     }
 
     public EvidenceAnalysisResponse analyze(MultipartFile file, Long userId, Long groupId,
-                                            String businessName, MultipartFile recipientImage) {
+                                            String businessName, String itemName, MultipartFile recipientImage) {
         User user = userRepository.findById(userId)
                 .orElseThrow(() -> new IllegalArgumentException("사용자를 찾을 수 없습니다."));
         UserGroup group = groupId != null
@@ -185,7 +185,7 @@ public class EvidenceService {
         String paymentType = evidenceAiService.classifyPaymentType(fileBytes, mimeType);
         log.info("결제 유형 분류 결과: {}", paymentType);
 
-        // 4. 증빙서류 저장 (사업명 + 수령인 사진 경로 포함)
+        // 4. 증빙서류 저장 (사업명 + 지출항목 + 수령인 사진 경로 포함)
         Evidence evidence = evidenceRepository.save(Evidence.builder()
                 .user(user)
                 .group(group)
@@ -194,6 +194,7 @@ public class EvidenceService {
                 .fileName(fileName)
                 .extractedText("")
                 .businessName(businessName)
+                .itemName(itemName)
                 .recipientImagePath(recipientImagePath)
                 .build());
 
@@ -429,10 +430,11 @@ public class EvidenceService {
             }
 
             // [경로 2] generatedFields → OCR 결과 포함해 LLM 생성
+            String itemName = evidence.getItemName();
             for (String field : generatedFieldsList) {
                 if (businessName != null && !businessName.isBlank()) {
                     String groupDescription = (group != null) ? group.getDescription() : null;
-                    String content = formAiService.generateFieldContent(businessName, groupDescription, field, filledFields);
+                    String content = formAiService.generateFieldContent(businessName, itemName, groupDescription, field, filledFields);
                     filledFields.put(field, content);
                     log.info("LLM 생성 필드: {} = {}", field, content);
                 } else {
@@ -479,11 +481,25 @@ public class EvidenceService {
         log.info("수령인 정보 추출 완료 - name={}, affiliation={}, studentId={}, phone={}",
                 info.get("name"), info.get("affiliation"), info.get("studentId"), info.get("phone"));
         return RecipientInfoResponse.builder()
-                .name(info.getOrDefault("name", ""))
+                .name(koreanOnlyName(info.getOrDefault("name", "")))   // 수령인 이름은 한글만 (학생증의 영문 표기 제거)
                 .affiliation(info.getOrDefault("affiliation", ""))
                 .studentId(info.getOrDefault("studentId", ""))
                 .phone(info.getOrDefault("phone", ""))
                 .build();
+    }
+
+    /** 수령인 이름에서 한글(과 공백)만 남긴다. 학생증의 영문 병기(예: "박세현 PARK SE HYEON") 제거용.
+     *  한글이 전혀 없으면 원본을 그대로 둔다. */
+    private String koreanOnlyName(String name) {
+        if (name == null) return null;
+        String r = name.replaceAll("[^가-힣\\s]", "").replaceAll("\\s+", " ").trim();
+        return r.isEmpty() ? name.trim() : r;
+    }
+
+    /** 양식의 수령인 이름 필드(수령인/수령자 + 성명/이름) 값을 한글만 남기도록 정리한다. */
+    private void cleanRecipientNames(Map<String, String> allFields) {
+        allFields.replaceAll((k, v) ->
+                (isRecipientField(k) && (k.contains("성명") || k.contains("이름"))) ? koreanOnlyName(v) : v);
     }
 
     /**
@@ -530,6 +546,7 @@ public class EvidenceService {
         Form form = formRepository.findById(input.getFormId())
                 .orElseThrow(() -> new IllegalArgumentException("양식지를 찾을 수 없습니다: " + input.getFormId()));
         Map<String, String> allFields = mergeFields(input);
+        cleanRecipientNames(allFields);
         applyGroupOrgTitle(allFields, evidence);
         applySignatureAndDate(allFields, evidence);
         Map<String, byte[]> imageBytesMap = resolveImageBytes(evidence, input.getImageFields());
@@ -552,6 +569,7 @@ public class EvidenceService {
                 Form form = formRepository.findById(input.getFormId())
                         .orElseThrow(() -> new IllegalArgumentException("양식지를 찾을 수 없습니다: " + input.getFormId()));
                 Map<String, String> allFields = mergeFields(input);
+                cleanRecipientNames(allFields);
                 applyGroupOrgTitle(allFields, evidence);
                 applySignatureAndDate(allFields, evidence);
                 Map<String, byte[]> imageBytesMap = resolveImageBytes(evidence, input.getImageFields());
@@ -657,6 +675,11 @@ public class EvidenceService {
         if (recipientName != null && !recipientName.isBlank()) {
             allFields.put(FormFillService.RECIPIENT_SIGN_KEY, recipientName.trim());
         }
+        // 검토자/회장 서명란("회장 (인)", "검토자 : (인)")에 회장 직급 멤버 이름을 채운다. (#4)
+        String reviewerName = resolveRolePersonField("회장", group);
+        if (reviewerName != null && !reviewerName.isBlank()) {
+            allFields.put(FormFillService.REVIEWER_SIGN_KEY, reviewerName.trim());
+        }
     }
 
     /** allFields에서 수령인 성명/이름 값을 찾는다(학생증에서 채워진 값). */
@@ -673,6 +696,18 @@ public class EvidenceService {
     }
 
     private String normalizeDateValue(String value) {
+        if (value == null || value.isBlank()) return value;
+        // 원장처럼 여러 거래 날짜가 콤마로 나열된 다중행 값은 토큰별로 정규화해 행 정렬을 유지한다.
+        String[] parts = value.split(",\\s+");
+        if (parts.length >= 3) {
+            List<String> out = new ArrayList<>(parts.length);
+            for (String p : parts) out.add(normalizeSingleDate(p.trim()));
+            return String.join(", ", out);
+        }
+        return normalizeSingleDate(value);
+    }
+
+    private String normalizeSingleDate(String value) {
         if (value == null || value.isBlank()) return value;
         Pattern full = Pattern.compile("(\\d{4})[-/.](\\d{1,2})[-/.](\\d{1,2})");
         Matcher m = full.matcher(value);
@@ -773,11 +808,19 @@ public class EvidenceService {
             }
         }
         // 회장/검토자 등 나머지 → 회장 역할 멤버 (부회장 제외)
-        return members.stream()
+        String byRoleName = members.stream()
                 .filter(m -> m.getRole() != null
                         && m.getRole().getRoleName().contains("회장")
                         && !m.getRole().getRoleName().contains("부회장"))
                 .findFirst()
+                .map(m -> m.getUser().getName())
+                .orElse(null);
+        if (byRoleName != null) return byRoleName;
+        // 폴백: roleName이 "회장"과 정확히 일치하지 않아도 결재권(approval_order)이 가장 높은
+        //       멤버(=대표/회장)를 검토자로 사용한다.
+        return members.stream()
+                .filter(m -> m.getRole() != null && m.getRole().getApprovalOrder() != null)
+                .max(Comparator.comparingInt(m -> m.getRole().getApprovalOrder()))
                 .map(m -> m.getUser().getName())
                 .orElse(null);
     }

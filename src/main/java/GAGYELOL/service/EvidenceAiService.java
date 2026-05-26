@@ -55,11 +55,13 @@ public class EvidenceAiService {
      * 반환 형식: {"filled": {"필드명": "값"}, "missing": ["필드명", ...]}
      */
     public String fillFormFields(byte[] fileBytes, String mimeType, List<String> formFields) {
+        // 수입지출관리대장(원장)일 때만 통장 거래내역 열↔열(행별 다중값) 매핑을 적용한다.
+        boolean ledgerForm = isLedgerFieldSet(formFields);
         Map<String, Object> properties = new LinkedHashMap<>();
         for (String field : formFields) {
             properties.put(field, Map.of(
                     "type", "string",
-                    "description", fieldDescription(field)
+                    "description", fieldDescription(field, ledgerForm)
             ));
         }
 
@@ -122,15 +124,35 @@ public class EvidenceAiService {
     }
 
     /**
-     * 추출 스키마의 필드 설명을 만든다. 금액성 필드에는 음수 기호를 제거한 절댓값으로,
-     * 부가세·공급가액 등 세부 금액이 여러 개면 모두 합산한 총합 하나만 반환하도록 지침을 덧붙인다. (#4)
+     * 양식 필드 집합이 수입지출관리대장(원장)인지 판별한다. 수입금액·지출금액·잔액 열을 모두 가져야 원장으로 본다.
+     * (지출기록부처럼 "지출 금액" 하나만 있는 양식은 원장이 아니므로 단일 금액으로 추출한다.) (#3)
+     */
+    private static boolean isLedgerFieldSet(List<String> fields) {
+        boolean income = false, expense = false, balance = false;
+        for (String f : fields) {
+            if (f.contains("수입") && f.contains("금액")) income = true;
+            else if (f.contains("지출") && f.contains("금액")) expense = true;
+            if (f.contains("잔액")) balance = true;
+        }
+        return income && expense && balance;
+    }
+
+    /**
+     * 추출 스키마의 필드 설명을 만든다. 수입지출관리대장(원장)이면 통장 거래내역 열↔열(행별 다중값)로,
+     * 그 외 양식의 금액성 필드에는 음수 제거·절댓값·영수증 최종 합계 금액 하나만 반환하도록 지침을 덧붙인다. (#3)
      * 날짜성 필드에는 대표 날짜 하나만, 시간 제외하여 반환하도록 지침을 덧붙인다.
      */
-    private static String fieldDescription(String field) {
+    private static String fieldDescription(String field, boolean ledgerForm) {
         String base = field + " 항목의 값";
+
+        // 원장 양식일 때만 통장 거래내역 열↔열 매핑(행별 다중값). 지출기록부의 "지출 금액" 등에는 적용 안 함.
+        if (ledgerForm) return ledgerColumnDescription(field);
+
         if (isAmountField(field)) {
-            return base + ". 금액은 음수 기호(-)를 제거하고 절댓값(양수)으로만 반환하고, "
-                    + "공급가액·부가세 등 세부 금액 항목이 여러 개이면 모두 합산한 총합 금액 하나만 숫자로 반환할 것";
+            return base + ". 금액은 음수 기호(-)를 제거하고 절댓값(양수)으로만 반환할 것. "
+                    + "영수증/증빙에 '승인금액', '총금액', '합계', '결제금액'처럼 최종 합계 금액이 표시되어 있으면 "
+                    + "그 최종 합계 금액 하나만 반환할 것(공급가액·부가세 등 중간 항목 금액이나 개별 품목 금액은 반환하지 말 것). "
+                    + "여러 금액을 나열하지 말고 숫자 하나만 반환할 것";
         }
         if (isDateField(field)) {
             return base + ". 날짜가 여러 개 있으면 가장 대표적인 날짜 하나만 반환할 것. "
@@ -138,6 +160,31 @@ public class EvidenceAiService {
                     + "형식은 YYYY년 MM월 DD일 또는 YY/MM/DD 중 원문 맥락에 맞는 것으로 통일할 것";
         }
         return base;
+    }
+
+    /**
+     * 수입지출관리대장(원장)의 각 열을 은행 거래내역(통장)의 대응 열에 행별로 매핑한다. 모든 열이 거래(행)
+     * 단위로 정렬돼야 하므로 각 열의 값을 위에서부터 순서대로 콤마로 나열하고 절대 합산하지 않는다.
+     * - 수입금액 ← '찾으신 금액'(출금) 열, 지출금액 ← '맡기신 금액'(입금) 열, 잔액 ← '거래후 잔액' 열
+     * - 날짜 ← 거래일시(날짜), 번호 ← 순번, 내용 ← 적요/기재내용
+     */
+    private static String ledgerColumnDescription(String field) {
+        String hint;
+        if (field.contains("수입") && field.contains("금액"))      hint = "통장 거래내역의 '찾으신 금액'(출금) 열";
+        else if (field.contains("지출") && field.contains("금액")) hint = "통장 거래내역의 '맡기신 금액'(입금) 열";
+        else if (field.contains("잔액"))                          hint = "통장 거래내역의 '거래후 잔액' 열";
+        else if (field.contains("날짜") || field.contains("일자")) hint = "통장 거래내역의 거래일시(날짜, 시간 제외)";
+        else if (field.contains("번호"))                          hint = "각 거래의 순번(1, 2, 3, …)";
+        else if (field.contains("내용") || field.contains("적요")) hint = "통장 거래내역의 적요/기재내용";
+        else hint = null;
+
+        String src = (hint != null) ? (" 이 열은 " + hint + "에 해당한다.") : "";
+        boolean numeric = field.contains("금액") || field.contains("잔액");
+        return field + " 항목." + src
+                + " 입력은 은행 거래내역(통장 거래내역조회)이다. 표의 각 거래(행) 값을 위에서부터 순서대로"
+                + " 모두 콤마(,)로 구분해 나열할 것. 절대 합산하지 말 것. "
+                + "특정 행에 값이 없으면 그 자리를 빈칸으로 두어 행 순서를 유지할 것."
+                + (numeric ? " 숫자만(원화기호·천단위 콤마 없이) 반환할 것." : "");
     }
 
     private static boolean isAmountField(String field) {
