@@ -33,7 +33,8 @@ public class EvidenceAiService {
                 "properties", Map.of(
                         "paymentType", Map.of(
                                 "type", "string",
-                                "description", "결제 수단 분류. 신용카드/체크카드 결제는 CARD, 현금/계좌이체/현금영수증은 CASH"
+                                "enum", List.of("CARD", "CASH", "BOTH"),
+                                "description", "결제 수단 분류. 신용카드/체크카드 결제는 CARD, 현금/계좌이체/현금영수증은 CASH, 판단 불가는 BOTH"
                         )
                 ),
                 "required", List.of("paymentType")
