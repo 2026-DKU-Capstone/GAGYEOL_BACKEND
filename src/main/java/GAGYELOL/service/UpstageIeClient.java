@@ -42,7 +42,6 @@ public class UpstageIeClient {
         try {
             Map<String, Object> body = Map.of(
                     "model", "information-extract",
-                    "temperature", 0,
                     "messages", List.of(Map.of(
                             "role", "user",
                             "content", List.of(Map.of(
