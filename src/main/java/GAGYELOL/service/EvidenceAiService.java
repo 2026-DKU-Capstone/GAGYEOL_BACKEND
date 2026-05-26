@@ -100,6 +100,7 @@ public class EvidenceAiService {
                 }
             }
 
+            log.info("Upstage IE 필드 추출 결과 - filled: {}, missing: {}", filled, missing);
             return mapper.writeValueAsString(Map.of("filled", filled, "missing", missing));
         } catch (Exception e) {
             throw new RuntimeException("필드 추출 실패: " + e.getMessage(), e);
@@ -168,9 +169,11 @@ public class EvidenceAiService {
                     + "여러 금액을 나열하지 말고 숫자 하나만 반환할 것";
         }
         if (isDateField(field)) {
-            return base + ". 날짜가 여러 개 있으면 가장 대표적인 날짜 하나만 반환할 것. "
+            return base + ". 영수증·증빙서류에 기재된 실제 결제일(승인일, 거래일)을 추출할 것. "
+                    + "영수증에 날짜가 여러 개 있으면 결제가 이루어진 날짜(승인일, 거래일, 결제일) 하나만 반환할 것. "
+                    + "오늘 날짜나 문서 작성일이 아닌, 증빙서류에 인쇄된 거래·승인 날짜를 반환할 것. "
                     + "시간(시각, HH:MM 등)은 포함하지 말 것. "
-                    + "형식은 YYYY년 MM월 DD일 또는 YY/MM/DD 중 원문 맥락에 맞는 것으로 통일할 것";
+                    + "형식은 YY/MM/DD로 반환할 것 (예: 25/03/15)";
         }
         return base;
     }
