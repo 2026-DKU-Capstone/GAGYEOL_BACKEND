@@ -248,6 +248,45 @@ class FormFillServiceXlsxTest {
         }
     }
 
+    /**
+     * (#1) 필드명을 부분 포함하는 비-머리글 칸("이전 잔액", "(최종 잔액)")이 표 머리글로 오인되어
+     * 제목/머리글 영역에 행이 삽입·오염되던 버그 재현. 다중행 데이터는 정확한 머리글("잔액") 아래에만
+     * 채워져야 하고, "이전 잔액"·"(최종 잔액)" 칸과 합계는 그대로 보존되어야 한다.
+     */
+    @Test
+    void 다중행_데이터는_부분일치_칸이_아니라_정확한_머리글_아래에만_채워진다() throws IOException {
+        Path tempFile = tempDir.resolve("ledger.xlsx");
+        try (XSSFWorkbook wb = new XSSFWorkbook()) {
+            Sheet sheet = wb.createSheet("1월");
+            sheet.createRow(0).createCell(5).setCellValue("이전 잔액"); // 머리글 아님(부분 일치)
+            sheet.createRow(2).createCell(0).setCellValue("잔액");      // 진짜 열 머리글
+            // row 3~5 = 데이터 칸 (빈 행)
+            sheet.createRow(6).createCell(0).setCellValue("합계");
+            sheet.createRow(8).createCell(0).setCellValue("(최종 잔액)"); // 머리글 아님(부분 일치)
+            try (FileOutputStream fos = new FileOutputStream(tempFile.toFile())) {
+                wb.write(fos);
+            }
+        }
+
+        Map<String, String> fields = new LinkedHashMap<>();
+        fields.put("잔액", "1000, 2000, 3000");
+
+        byte[] result = service.fill(tempFile.toString(), fields);
+
+        try (XSSFWorkbook out = new XSSFWorkbook(new ByteArrayInputStream(result))) {
+            assertThat(out.getNumberOfSheets()).isEqualTo(1);
+            Sheet sheet = out.getSheetAt(0);
+            // "잔액" 머리글(row2 col0) 아래 row3~5에만 값이 들어간다
+            assertThat(sheet.getRow(3).getCell(0).getStringCellValue()).isEqualTo("1000");
+            assertThat(sheet.getRow(4).getCell(0).getStringCellValue()).isEqualTo("2000");
+            assertThat(sheet.getRow(5).getCell(0).getStringCellValue()).isEqualTo("3000");
+            // "이전 잔액"/"(최종 잔액)" 칸과 합계는 보존(오염 없음)
+            assertThat(sheet.getRow(0).getCell(5).getStringCellValue()).isEqualTo("이전 잔액");
+            assertThat(sheet.getRow(6).getCell(0).getStringCellValue()).isEqualTo("합계");
+            assertThat(sheet.getRow(8).getCell(0).getStringCellValue()).isEqualTo("(최종 잔액)");
+        }
+    }
+
     private Path createXlsxWithGappedHeaders() throws IOException {
         Path tempFile = tempDir.resolve("form-gapped.xlsx");
         try (XSSFWorkbook wb = new XSSFWorkbook()) {

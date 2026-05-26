@@ -35,10 +35,12 @@ public class FormFillService {
     public static final String PAYER_SIGN_KEY = "__PAYER_SIGN__";
     /** 수령인 서명란("수령인 : (인)")에 채울 이름(학생증에서 추출한 수령인). */
     public static final String RECIPIENT_SIGN_KEY = "__RECIPIENT_SIGN__";
+    /** 검토자/회장 서명란("회장 (인)", "검토자 : (인)")에 채울 이름(그룹의 회장 직급 멤버). (#4) */
+    public static final String REVIEWER_SIGN_KEY = "__REVIEWER_SIGN__";
 
     /** fill()에서 일반 필드 루프 전에 분리해 별도 패스로 처리하는 예약 키 목록. */
     private static final List<String> RESERVED_KEYS =
-            List.of(ORG_TITLE_KEY, TODAY_DATE_KEY, PAYER_SIGN_KEY, RECIPIENT_SIGN_KEY);
+            List.of(ORG_TITLE_KEY, TODAY_DATE_KEY, PAYER_SIGN_KEY, RECIPIENT_SIGN_KEY, REVIEWER_SIGN_KEY);
 
     /** 양식에 박혀 있는 단체명 자리표시자: "00대학 00학과(부) 00전공 학생회" 류(00/OO/○○ 등 허용)를 통째로 매칭. */
     private static final java.util.regex.Pattern ORG_PLACEHOLDER =
@@ -52,6 +54,12 @@ public class FormFillService {
     /** "수령인 : (인)" 서명란. */
     private static final java.util.regex.Pattern SIGN_RECIPIENT =
             java.util.regex.Pattern.compile("수령인\\s*[:：]\\s*\\(\\s*인\\s*\\)");
+    /** 본문 "회장 (인)" 서명란(부회장 제외). */
+    private static final java.util.regex.Pattern SIGN_PRESIDENT =
+            java.util.regex.Pattern.compile("(?<!부)회장\\s*\\(\\s*인\\s*\\)");
+    /** "검토자 : (인)" 서명란. */
+    private static final java.util.regex.Pattern SIGN_REVIEWER =
+            java.util.regex.Pattern.compile("검토자\\s*[:：]\\s*\\(\\s*인\\s*\\)");
 
     /**
      * 파일 확장자에 따라 DOCX 또는 XLSX 채우기를 호출합니다.
@@ -270,6 +278,12 @@ public class FormFillService {
         if (recipient != null && !recipient.isBlank()) {
             text = SIGN_RECIPIENT.matcher(text).replaceAll(java.util.regex.Matcher.quoteReplacement("수령인 : " + recipient + " (인)"));
         }
+        String reviewer = reserved.get(REVIEWER_SIGN_KEY);
+        if (reviewer != null && !reviewer.isBlank()) {
+            // 본문 "회장 (인)" → "회장 {이름} (인)", 표 "검토자 : (인)" → "검토자 : {이름} (인)" (#4)
+            text = SIGN_PRESIDENT.matcher(text).replaceAll(java.util.regex.Matcher.quoteReplacement("회장 " + reviewer + " (인)"));
+            text = SIGN_REVIEWER.matcher(text).replaceAll(java.util.regex.Matcher.quoteReplacement("검토자 : " + reviewer + " (인)"));
+        }
         return text;
     }
 
@@ -473,8 +487,15 @@ public class FormFillService {
         return 1;
     }
 
-    /** 셀의 모든 단락에서 run(텍스트)을 제거한다. 단락 구조는 유지하고 첫 단락을 이미지용으로 재사용한다. (#5) */
+    /**
+     * 이미지 삽입을 위해 셀을 비운다: 첫 단락만 남기고 나머지 단락을 제거한 뒤 첫 단락의 run(텍스트)을 지운다.
+     * 양식 셀에 넣어둔 여러 빈 단락(줄바꿈)이 사진 아래 큰 빈 공간으로 남는 문제를 막는다. (#2)
+     */
     private void clearCellContent(XWPFTableCell cell) {
+        // 첫 단락만 남기고 나머지(빈 줄 포함) 단락 제거 — 셀은 최소 1개 단락이 필요하므로 index 0은 유지
+        for (int i = cell.getParagraphs().size() - 1; i >= 1; i--) {
+            cell.removeParagraph(i);
+        }
         for (XWPFParagraph para : cell.getParagraphs()) {
             for (int i = para.getRuns().size() - 1; i >= 0; i--) {
                 para.removeRun(i);
@@ -866,6 +887,17 @@ public class FormFillService {
         }
     }
 
+    /**
+     * 셀이 해당 필드의 '열 머리글'인지 판별한다. 공백 제거 후 셀 텍스트가 필드명으로 시작하면 머리글로 본다. (#1)
+     * 예) 필드 "잔액": "잔액"·"잔액(원)"은 머리글(true), "이전 잔액"·"(최종 잔액)"은 아님(false).
+     * 다중행(표) 데이터를 엉뚱한 칸에 채워 양식이 깨지는 것을 막기 위해 단순 contains 대신 사용한다.
+     */
+    private boolean isColumnHeaderMatch(String cellText, String field) {
+        String c = normalize(cellText).replace(" ", "");
+        String f = normalize(field).replace(" ", "");
+        return !f.isEmpty() && c.startsWith(f);
+    }
+
     private java.util.List<String> splitMultiRowValue(String value) {
         if (value == null) return java.util.Collections.emptyList();
         String[] parts = value.split(",\\s+");
@@ -931,8 +963,12 @@ public class FormFillService {
                                     : splitMultiRowValue(value);
 
                             if (rowValues.size() >= MULTIROW_MIN_PARTS) {
-                                // 표 데이터: 합계 행 처리·시트 분할을 위해 수집만 하고 Phase 2에서 채운다.
-                                multiRowFills.add(new MultiRowFill(si, row.getRowNum(), ci, rowValues));
+                                // 표(다중행) 데이터: 이 셀이 해당 필드의 '열 머리글'일 때만 수집한다.
+                                // "이전 잔액"·"(최종 잔액)"처럼 필드명("잔액")을 부분 포함하는 칸이 표 머리글로
+                                // 오인되어 제목/머리글 영역에 행이 삽입·오염되는 것을 막는다. (#1)
+                                if (isColumnHeaderMatch(cellText, field)) {
+                                    multiRowFills.add(new MultiRowFill(si, row.getRowNum(), ci, rowValues));
+                                }
                             } else {
                                 fillSingleValue(workbook, sheet, row, ci, value, centerStyleCache);
                                 log.debug("XLSX 필드 채우기(단일): {} = {}", field, value);

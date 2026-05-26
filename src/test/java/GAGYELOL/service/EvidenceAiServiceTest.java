@@ -18,8 +18,8 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /**
- * #4 검증: 금액성 필드의 추출 스키마 description에 "음수 제거·절댓값·세부항목 합산 총합" 지침이 포함되고,
- * 비금액 필드에는 포함되지 않아야 한다.
+ * #3 검증: 금액성 필드의 추출 스키마 description에 "음수 제거·절댓값·영수증 최종 합계 금액 하나만" 지침이
+ * 포함되고, 비금액 필드에는 포함되지 않아야 한다.
  */
 @ExtendWith(MockitoExtension.class)
 class EvidenceAiServiceTest {
@@ -31,7 +31,7 @@ class EvidenceAiServiceTest {
     @Captor ArgumentCaptor<Map<String, Object>> schemaCaptor;
 
     @Test
-    void 금액성_필드는_절댓값_총합_지침이_스키마에_포함되고_비금액_필드는_제외된다() {
+    void 금액성_필드는_절댓값_최종합계_지침이_스키마에_포함되고_비금액_필드는_제외된다() {
         when(upstageIeClient.extract(any(), eq("image/png"), any()))
                 .thenReturn("{\"금액\":\"1000\",\"비고\":\"메모\"}");
 
@@ -47,9 +47,9 @@ class EvidenceAiServiceTest {
         Map<String, Object> note = (Map<String, Object>) props.get("비고");
 
         assertThat((String) amount.get("description"))
-                .contains("음수").contains("절댓값").contains("합산");
+                .contains("음수").contains("절댓값").contains("최종 합계").contains("하나만");
         assertThat((String) note.get("description"))
-                .doesNotContain("절댓값").doesNotContain("합산");
+                .doesNotContain("절댓값").doesNotContain("최종 합계");
     }
 
     @Test
