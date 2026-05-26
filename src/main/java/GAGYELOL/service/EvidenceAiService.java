@@ -25,29 +25,41 @@ public class EvidenceAiService {
 
     /**
      * 증빙서류 파일에서 결제 수단을 분류합니다.
-     * Upstage IE에 파일을 직접 전송해 CARD / CASH를 반환합니다.
+     * Upstage IE로 결제 관련 텍스트를 추출한 뒤 키워드 매칭으로 분류합니다 (결정론적).
      */
     public String classifyPaymentType(byte[] fileBytes, String mimeType) {
         Map<String, Object> schema = Map.of(
                 "type", "object",
                 "properties", Map.of(
-                        "paymentType", Map.of(
+                        "paymentText", Map.of(
                                 "type", "string",
-                                "enum", List.of("CARD", "CASH", "BOTH"),
-                                "description", "결제 수단 분류. 신용카드/체크카드 결제는 CARD, 현금/계좌이체/현금영수증은 CASH, 판단 불가는 BOTH"
+                                "description", "문서에서 결제 수단과 관련된 텍스트 (카드번호, 승인번호, 현금, 계좌이체 등 결제 관련 내용 전체)"
                         )
                 ),
-                "required", List.of("paymentType")
+                "required", List.of("paymentText")
         );
 
-        log.info("Upstage IE 결제유형 분류 요청");
+        log.info("Upstage IE 결제유형 텍스트 추출 요청");
         try {
             String result = upstageIeClient.extract(fileBytes, mimeType, schema);
-            ObjectMapper mapper = new ObjectMapper();
-            return mapper.readTree(result).path("paymentType").asText("CASH");
+            String paymentText = new ObjectMapper().readTree(result).path("paymentText").asText("").toLowerCase();
+            log.info("결제유형 텍스트 추출 결과: {}", paymentText);
+            return classifyByKeyword(paymentText);
         } catch (Exception e) {
-            throw new RuntimeException("결제 유형 분류 실패: " + e.getMessage(), e);
+            log.warn("결제유형 분류 실패, BOTH 반환: {}", e.getMessage());
+            return "BOTH";
         }
+    }
+
+    private String classifyByKeyword(String text) {
+        boolean hasCard = text.contains("신용카드") || text.contains("체크카드")
+                || text.contains("카드승인") || text.contains("카드번호") || text.contains("승인번호");
+        boolean hasCash = text.contains("현금영수증") || text.contains("계좌이체")
+                || text.contains("입금") || text.contains("출금");
+
+        if (hasCard && !hasCash) return "CARD";
+        if (hasCash && !hasCard) return "CASH";
+        return "BOTH";
     }
 
     /**
