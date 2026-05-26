@@ -84,6 +84,12 @@ public class EvidenceService {
                     java.time.LocalDateTime updatedAt = approval
                             .map(a -> a.getUpdatedAt() != null ? a.getUpdatedAt() : e.getCreatedAt())
                             .orElse(e.getCreatedAt());
+                    String formName = approval
+                            .map(a -> a.getForm() != null ? a.getForm().getFormName() : null)
+                            .orElseGet(() -> {
+                                List<String> names = evidenceFormRepository.findFormNamesByEvidenceId(e.getId());
+                                return names.isEmpty() ? null : names.get(0);
+                            });
                     return GAGYELOL.dto.EvidenceListResponse.builder()
                             .evidenceId(e.getId())
                             .requestId(approval.map(a -> a.getId()).orElse(null))
@@ -93,6 +99,7 @@ public class EvidenceService {
                             .totalAmount(null)
                             .itemCount(null)
                             .fileType(resolveFileType(e.getFileName()))
+                            .formName(formName)
                             .createdAt(e.getCreatedAt())
                             .updatedAt(updatedAt)
                             .build();
