@@ -47,6 +47,9 @@ public class Evidence {
     @Column(name = "business_name")
     private String businessName;
 
+    @Column(name = "item_name")
+    private String itemName;
+
     @Column(name = "recipient_image_path")
     private String recipientImagePath;
 

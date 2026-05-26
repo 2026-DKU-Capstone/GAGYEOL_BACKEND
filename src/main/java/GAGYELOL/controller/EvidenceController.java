@@ -58,10 +58,11 @@ public class EvidenceController {
             @RequestParam("file") MultipartFile file,
             @RequestParam(value = "groupId", required = false) Long groupId,
             @RequestParam(value = "businessName", required = false) String businessName,
+            @RequestParam(value = "itemName", required = false) String itemName,
             @RequestParam(value = "recipientImage", required = false) MultipartFile recipientImage
     ) {
         Long userId = jwtUtil.extractUserId(token.replace("Bearer ", ""));
-        return ResponseEntity.ok(evidenceService.analyze(file, userId, groupId, businessName, recipientImage));
+        return ResponseEntity.ok(evidenceService.analyze(file, userId, groupId, businessName, itemName, recipientImage));
     }
 
     @PostMapping("/extract-recipient")
