@@ -87,8 +87,12 @@ public class FormAiService {
                 사업명: %s
                 %s%s%s위 사업의 공문서 양식에서 '%s' 항목에 들어갈 내용을 작성해주세요.
                 이미 파악된 항목(품목, 금액, 날짜 등)을 반영해 구체적으로 작성하세요.
-                간결하고 공식적인 문체로 2문장 이내, 공백 포함 %d자 이내로 작성하세요.
+                반드시 '-습니다' 체로, 간결하고 공식적인 문체로 2문장 이내, 공백 포함 %d자 이내로 작성하세요.
                 내용만 반환하고, 다른 설명은 붙이지 마세요.
+
+                [예시]
+                입력: 사업명=2024년 봄 MT, 지출 항목=버스 대여비, 금액=150,000원
+                출력: 2024년 봄 MT 행사 참석을 위한 버스 대여 비용으로 지출하였습니다. 총 150,000원이 교통비 항목으로 집행되었습니다.
                 """, businessName, itemLine, descLine, contextLine, fieldName, MAX_CONTENT_LEN);
 
         log.info("LLM 필드 생성 요청 - businessName={}, itemName={}, field={}, contextFields={}",
