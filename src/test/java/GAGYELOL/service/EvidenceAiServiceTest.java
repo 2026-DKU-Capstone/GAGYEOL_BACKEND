@@ -53,6 +53,40 @@ class EvidenceAiServiceTest {
     }
 
     @Test
+    void 원장_양식이면_각_열은_행별_다중값_매핑_지침이_적용된다() {
+        // 수입금액+지출금액+잔액이 모두 있는 원장(수입지출관리대장) 양식
+        when(upstageIeClient.extract(any(), eq("image/png"), any())).thenReturn("{}");
+
+        service.fillFormFields(new byte[]{1}, "image/png",
+                List.of("번호", "날짜", "내용", "수입금액", "지출금액", "잔액"));
+
+        verify(upstageIeClient).extract(any(), eq("image/png"), schemaCaptor.capture());
+        @SuppressWarnings("unchecked")
+        Map<String, Object> props = (Map<String, Object>) schemaCaptor.getValue().get("properties");
+
+        String income = (String) ((Map<?, ?>) props.get("수입금액")).get("description");
+        String expense = (String) ((Map<?, ?>) props.get("지출금액")).get("description");
+        // 열↔열 매핑 + 행별 다중값(콤마 나열, 합산 금지)
+        assertThat(income).contains("찾으신").contains("콤마").contains("합산하지");
+        assertThat(expense).contains("맡기신");
+        assertThat((String) ((Map<?, ?>) props.get("날짜")).get("description")).contains("콤마");
+    }
+
+    @Test
+    void 비원장_양식의_지출금액은_단일_최종합계로_추출된다() {
+        // "지출 금액"만 있고 수입금액/잔액이 없는 양식(지출기록부)은 원장이 아니므로 단일 금액
+        when(upstageIeClient.extract(any(), eq("image/png"), any())).thenReturn("{}");
+
+        service.fillFormFields(new byte[]{1}, "image/png", List.of("지출 금액", "내용"));
+
+        verify(upstageIeClient).extract(any(), eq("image/png"), schemaCaptor.capture());
+        @SuppressWarnings("unchecked")
+        Map<String, Object> props = (Map<String, Object>) schemaCaptor.getValue().get("properties");
+        String expense = (String) ((Map<?, ?>) props.get("지출 금액")).get("description");
+        assertThat(expense).contains("최종 합계").contains("하나만").doesNotContain("콤마");
+    }
+
+    @Test
     void 수령인_정보는_이름소속학번전화_4개_필드로_파싱되고_누락값은_빈문자열() {
         when(upstageIeClient.extract(any(), eq("image/jpeg"), any()))
                 .thenReturn("{\"name\":\"홍길동\",\"affiliation\":\"소프트웨어학과\",\"studentId\":\"32000000\"}");

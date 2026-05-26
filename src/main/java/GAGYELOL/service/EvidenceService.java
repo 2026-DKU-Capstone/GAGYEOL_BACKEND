@@ -695,6 +695,18 @@ public class EvidenceService {
 
     private String normalizeDateValue(String value) {
         if (value == null || value.isBlank()) return value;
+        // 원장처럼 여러 거래 날짜가 콤마로 나열된 다중행 값은 토큰별로 정규화해 행 정렬을 유지한다.
+        String[] parts = value.split(",\\s+");
+        if (parts.length >= 3) {
+            List<String> out = new ArrayList<>(parts.length);
+            for (String p : parts) out.add(normalizeSingleDate(p.trim()));
+            return String.join(", ", out);
+        }
+        return normalizeSingleDate(value);
+    }
+
+    private String normalizeSingleDate(String value) {
+        if (value == null || value.isBlank()) return value;
         Pattern full = Pattern.compile("(\\d{4})[-/.](\\d{1,2})[-/.](\\d{1,2})");
         Matcher m = full.matcher(value);
         if (m.find()) {

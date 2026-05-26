@@ -203,6 +203,9 @@ public class FormFillService {
             // 자리표시자 교체: 단체명("00대학 …학생회") · 오늘 날짜("0000년 00월 00일") · 지출인/수령인 서명
             applyTemplateReplacements(doc, reserved);
 
+            // 양식에 박혀 있던 불필요한 빈 줄(연속/말미 빈 단락)을 정리해 큰 빈 공간을 줄인다. (#2)
+            collapseBlankParagraphs(doc);
+
             ByteArrayOutputStream out = new ByteArrayOutputStream();
             doc.write(out);
             return out.toByteArray();
@@ -500,6 +503,42 @@ public class FormFillService {
             for (int i = para.getRuns().size() - 1; i >= 0; i--) {
                 para.removeRun(i);
             }
+        }
+    }
+
+    /**
+     * DOCX 표 셀의 과도한 빈 단락을 정리한다: 연속된 빈 단락은 1개로 줄이고, 셀 끝(마지막 내용 이후)의
+     * 빈 단락은 모두 제거한다. 양식에 박혀 있던 줄바꿈 때문에 사진/문구 아래 큰 빈 공간이 생기는 것을 막는다. (#2)
+     */
+    private void collapseBlankParagraphs(XWPFDocument doc) {
+        for (XWPFTable t : doc.getTables()) {
+            for (XWPFTableRow r : t.getRows()) {
+                for (XWPFTableCell c : r.getTableCells()) {
+                    collapseCellBlanks(c);
+                }
+            }
+        }
+    }
+
+    private void collapseCellBlanks(XWPFTableCell cell) {
+        List<XWPFParagraph> paras = cell.getParagraphs();
+        java.util.List<Integer> toRemove = new java.util.ArrayList<>();
+        boolean prevBlank = false;
+        int lastNonBlank = -1;
+        for (int i = 0; i < paras.size(); i++) {
+            boolean blank = paras.get(i).getText().trim().isEmpty();
+            if (blank && prevBlank) toRemove.add(i);   // 연속 빈 단락 → 1개로
+            if (!blank) lastNonBlank = i;
+            prevBlank = blank;
+        }
+        // 마지막 내용 단락 이후의 빈 단락(말미 여백)은 모두 제거 (셀에는 단락 1개를 남긴다)
+        for (int i = paras.size() - 1; i > lastNonBlank && i >= 1; i--) {
+            if (!toRemove.contains(i)) toRemove.add(i);
+        }
+        toRemove.sort(java.util.Collections.reverseOrder());
+        for (int idx : toRemove) {
+            if (cell.getParagraphs().size() <= 1) break;
+            cell.removeParagraph(idx);
         }
     }
 
