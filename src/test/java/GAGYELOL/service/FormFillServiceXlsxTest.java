@@ -288,11 +288,11 @@ class FormFillServiceXlsxTest {
     }
 
     /**
-     * (#2) 수입지출관리대장(원장): 통장 거래를 거래일 '월'에 맞는 시트로 분산하고, 번호는 시트마다 1부터
-     * 순번 재부여, 금액·잔액은 숫자로 채우며, 합계 행 잔액 칸에는 마지막 잔액을 적는다.
+     * (#2) 수입지출관리대장(원장): 통장 거래를 거래일 '월'에 맞는 시트로 분산하고, 번호는 시트 간 연속 부여,
+     * 금액·잔액은 숫자로 채우며, 합계 행에 수입·지출 합계와 최종 잔액을 적는다.
      */
     @Test
-    void 원장은_거래월별_시트로_분산되고_번호순번_숫자금액_최종잔액이_채워진다() throws IOException {
+    void 원장은_거래월별_시트분산_번호연속_수입지출합계_최종잔액이_채워진다() throws IOException {
         Path tempFile = tempDir.resolve("ledger-monthly.xlsx");
         try (XSSFWorkbook wb = new XSSFWorkbook()) {
             for (String month : new String[]{"8월", "9월"}) {
@@ -320,21 +320,56 @@ class FormFillServiceXlsxTest {
             Sheet aug = out.getSheet("8월");
             Sheet sep = out.getSheet("9월");
 
-            // 8월: 거래 1건(고현주), 번호 1, 금액 숫자
+            // 8월: 거래 1건(고현주) → 번호 1
             assertThat(aug.getRow(1).getCell(0).getNumericCellValue()).isEqualTo(1.0);
             assertThat(aug.getRow(1).getCell(2).getStringCellValue()).isEqualTo("고현주");
             assertThat(aug.getRow(1).getCell(4).getNumericCellValue()).isEqualTo(100.0); // 지출금액 숫자
             assertThat(aug.getRow(4).getCell(0).getStringCellValue()).isEqualTo("합계");
-            assertThat(aug.getRow(4).getCell(5).getNumericCellValue()).isEqualTo(900.0); // 최종 잔액
+            assertThat(aug.getRow(4).getCell(3).getNumericCellValue()).isEqualTo(0.0);    // 수입 합계
+            assertThat(aug.getRow(4).getCell(4).getNumericCellValue()).isEqualTo(100.0);  // 지출 합계
+            assertThat(aug.getRow(4).getCell(5).getNumericCellValue()).isEqualTo(900.0);  // 최종 잔액
 
-            // 9월: 거래 3건, 번호는 1부터 재부여, 금액 숫자
-            assertThat(sep.getRow(1).getCell(0).getNumericCellValue()).isEqualTo(1.0);
-            assertThat(sep.getRow(2).getCell(0).getNumericCellValue()).isEqualTo(2.0);
-            assertThat(sep.getRow(3).getCell(0).getNumericCellValue()).isEqualTo(3.0);
+            // 9월: 거래 3건, 번호는 8월(1)에 이어 2·3·4로 연속 부여
+            assertThat(sep.getRow(1).getCell(0).getNumericCellValue()).isEqualTo(2.0);
+            assertThat(sep.getRow(2).getCell(0).getNumericCellValue()).isEqualTo(3.0);
+            assertThat(sep.getRow(3).getCell(0).getNumericCellValue()).isEqualTo(4.0);
             assertThat(sep.getRow(1).getCell(3).getNumericCellValue()).isEqualTo(1000.0); // 수입금액 숫자
             assertThat(sep.getRow(3).getCell(5).getNumericCellValue()).isEqualTo(6900.0); // 마지막 거래 잔액
             assertThat(sep.getRow(4).getCell(0).getStringCellValue()).isEqualTo("합계");
+            assertThat(sep.getRow(4).getCell(3).getNumericCellValue()).isEqualTo(6000.0); // 수입 합계(1000+2000+3000)
+            assertThat(sep.getRow(4).getCell(4).getNumericCellValue()).isEqualTo(0.0);    // 지출 합계
             assertThat(sep.getRow(4).getCell(5).getNumericCellValue()).isEqualTo(6900.0); // 최종 잔액
+        }
+    }
+
+    /**
+     * (#원장) '담당'·'회장' 라벨 아래의 "OOO (인)" 서명 칸에 지출인 이름(PAYER_SIGN_KEY)과
+     * 회장 직책 멤버 이름(REVIEWER_SIGN_KEY)을 "{이름} (인)" 형태로 채운다.
+     */
+    @Test
+    void 담당회장_라벨아래_OOO서명칸에_지출인과_회장_이름을_채운다() throws IOException {
+        Path tempFile = tempDir.resolve("sign-labels.xlsx");
+        try (XSSFWorkbook wb = new XSSFWorkbook()) {
+            Sheet s = wb.createSheet();
+            Row labels = s.createRow(0);
+            labels.createCell(3).setCellValue("담당");
+            labels.createCell(5).setCellValue("회장");
+            Row vals = s.createRow(1);
+            vals.createCell(3).setCellValue("OOO (인)");
+            vals.createCell(5).setCellValue("OOO (인)");
+            try (FileOutputStream fos = new FileOutputStream(tempFile.toFile())) { wb.write(fos); }
+        }
+
+        Map<String, String> fields = new LinkedHashMap<>();
+        fields.put(FormFillService.PAYER_SIGN_KEY, "홍길동");
+        fields.put(FormFillService.REVIEWER_SIGN_KEY, "안균승");
+
+        byte[] result = service.fill(tempFile.toString(), fields);
+
+        try (XSSFWorkbook out = new XSSFWorkbook(new ByteArrayInputStream(result))) {
+            Sheet s = out.getSheetAt(0);
+            assertThat(s.getRow(1).getCell(3).getStringCellValue()).isEqualTo("홍길동 (인)"); // 담당 = 지출인
+            assertThat(s.getRow(1).getCell(5).getStringCellValue()).isEqualTo("안균승 (인)"); // 회장 = 회장 직책
         }
     }
 
