@@ -16,6 +16,7 @@ public class EvidenceListResponse {
     private Integer totalAmount; // 현재 미지원, null 반환
     private Integer itemCount;   // 현재 미지원, null 반환
     private String fileType;     // DOCX / XLSX / PDF / JPG 등
+    private String formName;     // 선택된 양식지 이름 (미선택 시 null)
     private LocalDateTime createdAt;
     private LocalDateTime updatedAt;
 }
