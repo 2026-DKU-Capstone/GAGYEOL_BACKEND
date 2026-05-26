@@ -198,19 +198,20 @@ public class EvidenceService {
                 .recipientImagePath(recipientImagePath)
                 .build());
 
-        // 5. 그룹의 모든 양식지 반환 (paymentType 필터 제거 - GPT 분류 비결정성 대응)
+        // 5. 그룹의 양식지 중 paymentType이 일치하거나 BOTH인 것만 반환
         List<Form> forms = group != null
                 ? formRepository.findByGroup(group)
                 : formRepository.findAll();
         log.info("양식지 {}개 로드 완료 (결제유형: {})", forms.size(), paymentType);
 
         List<EvidenceAnalysisResponse.FormSummary> formSummaries = forms.stream()
+                .filter(f -> f.getPaymentType().equalsIgnoreCase(paymentType)
+                        || f.getPaymentType().equalsIgnoreCase("BOTH"))
                 .map(f -> {
                     List<String> fields = List.of();
                     try { fields = objectMapper.readValue(f.getFormFields(), new TypeReference<>() {}); }
                     catch (Exception ignored) {}
-                    double score = f.getPaymentType().equalsIgnoreCase(paymentType) ? 1.0
-                            : f.getPaymentType().equalsIgnoreCase("BOTH") ? 0.9 : 0.8;
+                    double score = f.getPaymentType().equalsIgnoreCase(paymentType) ? 1.0 : 0.9;
                     return EvidenceAnalysisResponse.FormSummary.builder()
                             .formId(f.getId())
                             .formName(f.getFormName())
