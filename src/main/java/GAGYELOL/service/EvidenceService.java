@@ -22,6 +22,12 @@ import GAGYELOL.repository.UserRepository;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import org.apache.poi.ss.usermodel.Cell;
+import org.apache.poi.ss.usermodel.CellType;
+import org.apache.poi.ss.usermodel.Row;
+import org.apache.poi.ss.usermodel.Sheet;
+import org.apache.poi.ss.usermodel.Workbook;
+import org.apache.poi.ss.usermodel.WorkbookFactory;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
@@ -383,6 +389,23 @@ public class EvidenceService {
                 }
             }
 
+            // [경로 1'] 원장(수입지출관리대장) + 증빙이 스프레드시트(.xls/.xlsx)면 Upstage IE 대신 POI로 통장 열을
+            //           직접 파싱한다. IE는 바이너리 .xls 표를 못 읽어 한 행/빈 값으로만 돌아오므로,
+            //           전 거래(행)를 보존하려면 서버에서 직접 읽어야 한다. (열↔열, 행별 다중값)
+            if (isLedgerFieldSet(formFields) && isSpreadsheetFile(evidence.getFileName())) {
+                try {
+                    Map<String, String> bankCols = extractLedgerFromBankSheet(evidence, formFields);
+                    if (!bankCols.isEmpty()) {
+                        filledFields.putAll(bankCols);
+                        directFields.removeAll(bankCols.keySet());
+                        generatedFieldsList.removeAll(bankCols.keySet());
+                        log.info("원장: 통장 시트를 POI로 직접 파싱 - 채운 열 {}", bankCols.keySet());
+                    }
+                } catch (Exception e) {
+                    log.warn("통장 시트 직접 파싱 실패, IE 경로로 진행: {}", e.getMessage());
+                }
+            }
+
             if (!directFields.isEmpty()) {
                 byte[] evidenceBytes;
                 try {
@@ -672,6 +695,96 @@ public class EvidenceService {
             out.add(tt.isEmpty() ? bizT : bizT + " - " + tt);
         }
         allFields.put(contentKey, String.join(", ", out));
+    }
+
+    private static boolean isSpreadsheetFile(String fileName) {
+        if (fileName == null) return false;
+        String l = fileName.toLowerCase();
+        return l.endsWith(".xls") || l.endsWith(".xlsx");
+    }
+
+    /**
+     * 통장 거래내역 스프레드시트(.xls/.xlsx)를 POI로 직접 파싱해 원장 폼 필드별 '행별 다중값'(콤마 나열)을 만든다. (#2)
+     * - 수입금액 ← '찾으신 금액', 지출금액 ← '맡기신 금액', 잔액 ← '거래후 잔액'
+     * - 날짜 ← 거래일시(날짜만), 내용 ← 기재내용/적요, 번호 ← 순번
+     * 통장 형식(찾으신/맡기신/거래후 잔액 헤더)이 아니면 빈 맵을 반환해 호출자가 IE 경로로 폴백하게 한다.
+     */
+    static Map<String, String> extractLedgerFromBankSheet(Evidence evidence, List<String> formFields) throws IOException {
+        Map<String, String> result = new LinkedHashMap<>();
+        try (Workbook wb = WorkbookFactory.create(new java.io.File(evidence.getFilePath()))) {
+            Sheet sheet = wb.getSheetAt(0);
+            int headerRow = -1, cDate = -1, cContent = -1, cWithdraw = -1, cDeposit = -1, cBalance = -1;
+            for (int r = sheet.getFirstRowNum(); r <= sheet.getLastRowNum(); r++) {
+                Row row = sheet.getRow(r);
+                if (row == null) continue;
+                int date = -1, content = -1, withdraw = -1, deposit = -1, balance = -1;
+                for (int c = 0; c < row.getLastCellNum(); c++) {
+                    String t = cellString(row.getCell(c)).replace(" ", "");
+                    if (t.isEmpty()) continue;
+                    if (t.contains("거래일")) date = c;
+                    else if (date < 0 && (t.equals("일자") || t.equals("날짜"))) date = c;
+                    if (t.contains("기재내용")) content = c;
+                    else if (content < 0 && t.contains("적요")) content = c;
+                    if (t.contains("찾으신")) withdraw = c;
+                    if (t.contains("맡기신")) deposit = c;
+                    if (t.contains("거래후") && t.contains("잔액")) balance = c;
+                    else if (balance < 0 && t.equals("잔액")) balance = c;
+                }
+                if (withdraw >= 0 && deposit >= 0 && balance >= 0) {
+                    headerRow = r; cDate = date; cContent = content; cWithdraw = withdraw; cDeposit = deposit; cBalance = balance;
+                    break;
+                }
+            }
+            if (headerRow < 0) return result; // 통장 형식이 아님 → IE 폴백
+
+            List<String> dates = new ArrayList<>(), contents = new ArrayList<>(),
+                    withdraws = new ArrayList<>(), deposits = new ArrayList<>(), balances = new ArrayList<>();
+            for (int r = headerRow + 1; r <= sheet.getLastRowNum(); r++) {
+                Row row = sheet.getRow(r);
+                if (row == null) continue;
+                String dv = (cDate >= 0) ? datePart(cellString(row.getCell(cDate))) : "";
+                String wv = (cWithdraw >= 0) ? cellString(row.getCell(cWithdraw)) : "";
+                String pv = (cDeposit >= 0) ? cellString(row.getCell(cDeposit)) : "";
+                String bv = (cBalance >= 0) ? cellString(row.getCell(cBalance)) : "";
+                String cv = (cContent >= 0) ? cellString(row.getCell(cContent)) : "";
+                if (dv.isEmpty() && wv.isEmpty() && pv.isEmpty() && bv.isEmpty()) continue; // 빈/합계 행 스킵
+                dates.add(dv); contents.add(cv); withdraws.add(wv); deposits.add(pv); balances.add(bv);
+            }
+            if (dates.isEmpty()) return result;
+
+            for (String f : formFields) {
+                if (f.contains("수입") && f.contains("금액")) result.put(f, String.join(", ", withdraws));
+                else if (f.contains("지출") && f.contains("금액")) result.put(f, String.join(", ", deposits));
+                else if (f.contains("잔액")) result.put(f, String.join(", ", balances));
+                else if (f.contains("날짜") || f.contains("일자")) result.put(f, String.join(", ", dates));
+                else if (f.contains("내용") || f.contains("적요")) result.put(f, String.join(", ", contents));
+                else if (f.contains("번호")) {
+                    List<String> nos = new ArrayList<>(dates.size());
+                    for (int i = 0; i < dates.size(); i++) nos.add(String.valueOf(i + 1));
+                    result.put(f, String.join(", ", nos));
+                }
+            }
+        }
+        return result;
+    }
+
+    /** 셀 값을 문자열로. 숫자는 정수면 정수 문자열(원화기호·콤마 없이). */
+    private static String cellString(Cell c) {
+        if (c == null) return "";
+        if (c.getCellType() == CellType.STRING) return c.getStringCellValue().trim();
+        if (c.getCellType() == CellType.NUMERIC) {
+            double d = c.getNumericCellValue();
+            return (d == Math.rint(d)) ? String.valueOf((long) d) : String.valueOf(d);
+        }
+        return "";
+    }
+
+    /** "2025.09.20 14:26" → "2025.09.20" (시간 제거). */
+    private static String datePart(String s) {
+        if (s == null) return "";
+        String t = s.trim();
+        int sp = t.indexOf(' ');
+        return sp > 0 ? t.substring(0, sp) : t;
     }
 
     /**
