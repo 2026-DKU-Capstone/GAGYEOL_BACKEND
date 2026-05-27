@@ -4,6 +4,7 @@ import GAGYELOL.dto.dashboard.DashboardSummaryResponse;
 import GAGYELOL.dto.dashboard.MonthlyDirectoryResponse;
 import GAGYELOL.dto.dashboard.RecentApprovalsResponse;
 import GAGYELOL.entity.ApprovalRequest;
+import GAGYELOL.entity.UserGroup;
 import GAGYELOL.repository.ApprovalRequestRepository;
 import GAGYELOL.repository.UserGroupRepository;
 import com.fasterxml.jackson.core.type.TypeReference;
@@ -30,7 +31,7 @@ public class DashboardService {
     private final ObjectMapper objectMapper;
 
     public DashboardSummaryResponse getSummary(Long userId, Long groupId) {
-        validateGroup(groupId);
+        UserGroup group = validateGroup(groupId);
 
         LocalDateTime now = LocalDateTime.now();
         LocalDateTime thisMonthStart = now.withDayOfMonth(1).withHour(0).withMinute(0).withSecond(0).withNano(0);
@@ -38,9 +39,9 @@ public class DashboardService {
         LocalDateTime prevMonthEnd = thisMonthStart.minusNanos(1);
 
         List<ApprovalRequest> thisMonth = requestRepository
-                .findByRequesterIdAndGroupIdAndCreatedAtBetween(userId, groupId, thisMonthStart, now);
+                .findByGroupIdAndCreatedAtBetween(groupId, thisMonthStart, now);
         List<ApprovalRequest> prevMonth = requestRepository
-                .findByRequesterIdAndGroupIdAndCreatedAtBetween(userId, groupId, prevMonthStart, prevMonthEnd);
+                .findByGroupIdAndCreatedAtBetween(groupId, prevMonthStart, prevMonthEnd);
 
         long monthlyAmount = thisMonth.stream()
                 .filter(r -> "APPROVED".equals(r.getStatus()))
@@ -50,7 +51,7 @@ public class DashboardService {
                 .mapToLong(r -> extractAmount(r.getFilledFields())).sum();
 
         List<ApprovalRequest> inProgressList = requestRepository
-                .findByRequesterIdAndGroupIdAndStatus(userId, groupId, "IN_PROGRESS");
+                .findByGroupAndStatus(group, "IN_PROGRESS");
         double avgWaiting = inProgressList.stream()
                 .mapToDouble(r -> ChronoUnit.HOURS.between(r.getCreatedAt(), now) / 24.0)
                 .average().orElse(0.0);
@@ -71,10 +72,10 @@ public class DashboardService {
     }
 
     public List<MonthlyDirectoryResponse> getMonthlyDirectory(Long userId, Long groupId) {
-        validateGroup(groupId);
+        UserGroup group = validateGroup(groupId);
 
         List<ApprovalRequest> all = requestRepository
-                .findByRequesterIdAndGroupIdOrderByCreatedAtDesc(userId, groupId);
+                .findByGroupOrderByCreatedAtDesc(group);
 
         Map<String, List<ApprovalRequest>> grouped = all.stream()
                 .collect(Collectors.groupingBy(r ->
@@ -104,10 +105,10 @@ public class DashboardService {
     }
 
     public RecentApprovalsResponse getRecentApprovals(Long userId, Long groupId, String status) {
-        validateGroup(groupId);
+        UserGroup group = validateGroup(groupId);
 
         List<ApprovalRequest> all = requestRepository
-                .findByRequesterIdAndGroupIdOrderByCreatedAtDesc(userId, groupId);
+                .findByGroupOrderByCreatedAtDesc(group);
 
         long reviewing = all.stream().filter(r -> "IN_PROGRESS".equals(r.getStatus())).count();
         long approved = all.stream().filter(r -> "APPROVED".equals(r.getStatus())).count();
@@ -182,8 +183,8 @@ public class DashboardService {
         }
     }
 
-    private void validateGroup(Long groupId) {
-        groupRepository.findById(groupId)
+    private UserGroup validateGroup(Long groupId) {
+        return groupRepository.findById(groupId)
                 .orElseThrow(() -> new IllegalArgumentException("그룹을 찾을 수 없습니다."));
     }
 }

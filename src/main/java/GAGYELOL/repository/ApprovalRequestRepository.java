@@ -37,6 +37,9 @@ public interface ApprovalRequestRepository extends JpaRepository<ApprovalRequest
     @Query("SELECT r FROM ApprovalRequest r WHERE r.requester.id = :userId AND r.group.id = :groupId AND r.status = :status")
     List<ApprovalRequest> findByRequesterIdAndGroupIdAndStatus(@Param("userId") Long userId, @Param("groupId") Long groupId, @Param("status") String status);
 
+    @Query("SELECT r FROM ApprovalRequest r WHERE r.group.id = :groupId AND r.createdAt BETWEEN :start AND :end")
+    List<ApprovalRequest> findByGroupIdAndCreatedAtBetween(@Param("groupId") Long groupId, @Param("start") LocalDateTime start, @Param("end") LocalDateTime end);
+
     @Modifying
     @Query("UPDATE ApprovalRequest r SET r.form = null WHERE r.form.id = :formId")
     void detachForm(@Param("formId") Long formId);
