@@ -16,6 +16,48 @@
 | 빌드 | Gradle |
 | 배포 | Docker, Docker Compose |
 
+## 서비스 아키텍처
+
+```mermaid
+graph TD
+    User["👤 사용자 (Browser)"]
+
+    subgraph Frontend["Frontend (Next.js)"]
+        FE["가결 웹 앱"]
+    end
+
+    subgraph Backend["Backend (Spring Boot · AWS EC2)"]
+        API["REST API"]
+        Auth["JWT 인증"]
+        AI["AI 서비스\n(FormAiService, EvidenceAiService)"]
+        RAG["RAG 엔진\n(PolicyAiService + pgvector)"]
+        Doc["문서 처리\n(PDFBox · Apache POI)"]
+    end
+
+    subgraph Infra["Infrastructure (Docker)"]
+        DB["PostgreSQL 16\n+ pgvector"]
+        FS["파일 스토리지\n(./uploads)"]
+    end
+
+    subgraph External["외부 서비스"]
+        OpenAI["OpenAI\nGPT-4o · text-embedding-3-small"]
+        Upstage["Upstage\nInformation Extract API"]
+    end
+
+    User -->|HTTPS| FE
+    FE -->|REST API · Bearer JWT| API
+    API --> Auth
+    API --> AI
+    API --> RAG
+    API --> Doc
+    AI -->|필드 분석 · 양식 선택| OpenAI
+    AI -->|OCR · 결제수단 분류| Upstage
+    RAG -->|임베딩 생성| OpenAI
+    RAG -->|코사인 유사도 검색| DB
+    Doc -->|완성 파일 저장| FS
+    API -->|JPA| DB
+```
+
 ## 주요 기능
 
 - **증빙서류 AI 분석** — 영수증/거래명세서 업로드 → Upstage IE로 결제수단 분류 및 필드 자동 추출
