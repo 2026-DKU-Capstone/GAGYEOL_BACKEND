@@ -165,7 +165,7 @@ ApprovalRequest ──< ApprovalStep
 
 ## 관련 레포지토리
 
-- **Frontend**: [2026-DKU-Capstone/2026_DKU_FRONTEND](https://github.com/2026-DKU-Capstone/2026_DKU_FRONTEND)
+- **Frontend**: [DKU-GAGYEOL/GAGYEOL_FRONTEND](https://github.com/DKU-GAGYEOL/GAGYEOL_FRONTEND)
 
 ## 팀원
 
