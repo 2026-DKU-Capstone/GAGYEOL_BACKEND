@@ -165,7 +165,7 @@ ApprovalRequest ──< ApprovalStep
 
 ## 관련 레포지토리
 
-- **Frontend**: [DKU-GAGYEOL/GAGYEOL_FRONTEND](https://github.com/DKU-GAGYEOL/GAGYEOL_FRONTEND)
+- **Frontend**: [DKU-GAGYEOL/GAGYEOL_FE](https://github.com/DKU-GAGYEOL/GAGYEOL_FE)
 
 ## 팀원
 
